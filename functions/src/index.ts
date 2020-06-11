@@ -356,9 +356,9 @@ exports.onNewExternalRepartidor = functions.database.ref('nuevo_repartidor/{regi
             await admin.database().ref(`repartidores_asociados_info/${region}/suspendidos/detalles/${idRepartidor}`).set(repartidor.detalles)
             await admin.database().ref(`repartidores_asociados_info/${region}/suspendidos/preview/${idRepartidor}`).set(repartidor.preview)
             await admin.database().ref(`regiones_repartidores_asociados/${idRepartidor}`).set(region)
-            return admin.database().ref(`result/${region}/${idRepartidor}`).push(idRepartidor)
+            return admin.database().ref(`result/${region}/${idRepartidor}`).push('ok')
         } catch (error) {
-            return admin.database().ref(`result/${region}/${idRepartidor}`).push('error')
+            return admin.database().ref(`result/${region}/${idRepartidor}`).push(error.errorInfo.code)
         }
     })
 
@@ -382,11 +382,18 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
                 throw error
             }
         })
-        .then(async (repartidores_raw) => {
+        .then(async (repartidores_raw: RepartidorAsociado[]) => {
             repartidores = repartidores_raw.filter(r => r.token)
             if (repartidores.length === 0) {
                 const error = 'no_repartidores_available'
                 throw error
+            }
+            if (pedido.formaPago.forma === 'efectivo') {
+                repartidores = repartidores_raw.filter(r => r.maneja_efectivo)
+                if (repartidores.length === 0) {
+                    const error = 'no_repartidores_available'
+                    throw error
+                }
             }
             for (const repartidor of repartidores) {
                 if (!repartidor.last_notification) repartidor.last_notification = 0
@@ -434,7 +441,12 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
         })
         .then(() => admin.database().ref(`repartidores_asociados_info/${pedido.region}/preview/${repartidorId}/last_notification`).set(pedido.last_solicitud))
         .then(() => admin.database().ref(`pedidos/historial/${pedido.region}/por_fecha/${date}/${idPedido}`).update(pedido))
-        .catch(err => console.log(err))
+        .catch(err => {
+            if (err === 'no_repartidores_available') {
+                // alerta Admin
+            }
+            console.log(err)
+        })
     })
 
 exports.pedidoTomadoRepartidor = functions.database.ref('pendientes_aceptacion/{idRepartidor}/{idPedido}')
@@ -679,6 +691,82 @@ function calificaNegocio(data: ResumenNegocioCalificaciones, calificacion: Calif
 
 
         // Propios de administración, registros
+
+exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTemporal}')
+    .onCreate(async (snapshot, context) => {
+        const region = context.params.region
+        const idTemporal = context.params.idTemporal
+        const negocio: NegocioPerfil = snapshot.val()
+        try {
+            const newPerfil = await admin.auth().createUser({
+                disabled: false,
+                displayName: negocio.nombre,
+                email: negocio.correo,
+                password: negocio.pass,
+            });
+            negocio.id = newPerfil.uid
+
+                // Info perfil
+            await admin.database().ref(`perfiles/${negocio.id}`).set(negocio)
+
+                // Info pasillos
+            let datosPasillo
+            if (negocio.tipo === 'servicios') {
+              datosPasillo = {
+                portada: negocio.portada,
+                telefono: negocio.telefono,
+                whats: negocio.whats,
+              };
+            } else {
+              datosPasillo = {
+                portada: negocio.portada,
+              }
+            }
+            await admin.database().ref(`negocios/pasillos/${negocio.categoria}/${negocio.id}`).update(datosPasillo)
+
+
+                // Info detalles
+            const detalles = {
+            descripcion: negocio.descripcion,
+            direccion: negocio.direccion.direccion,
+            lat: negocio.direccion.lat,
+            lng: negocio.direccion.lng,
+            telefono: negocio.telefono
+            }
+            await admin.database().ref(`negocios/detalles/${negocio.categoria}/${negocio.id}`).update(detalles)
+
+                // Info datos-pedido & preparacion if tipo productos
+            if (negocio.tipo === 'productos') {
+            const datosPedido = {
+              direccion: negocio.direccion,
+              envio: negocio.envio || 0,
+              entrega: negocio.entrega,
+              telefono: negocio.telefono,
+              formas_pago: negocio.formas_pago
+            }
+            await admin.database().ref(`negocios/datos-pedido/${negocio.categoria}/${negocio.id}`).update(datosPedido)
+            }
+            if (negocio.preparacion && negocio.tipo === 'productos') {
+                await admin.database().ref(`preparacion//${negocio.id}`).set(negocio.preparacion)
+            }
+
+                // Palabras búsqueda
+            let claves = ''
+            claves = claves.concat(negocio.nombre + ' ')
+            claves = claves.concat(negocio.categoria)
+            claves = claves
+                .toLocaleLowerCase()
+                .split(' ')
+                .filter((item, i, allItems) => i === allItems.indexOf(item))
+                .join(' ')
+            await admin.database().ref(`busqueda/${region}/${negocio.id}/palabras`).set(claves)
+
+                //Listoforo
+            return admin.database().ref(`result_negocios/${region}/${idTemporal}`).push('ok')
+        } catch (error) {
+            return admin.database().ref(`result_negocios/${region}/${idTemporal}`).push(error.errorInfo.code)
+        }
+    })
 
 exports.onProdEliminado = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{pasillo}/{idProducto}')
     .onDelete(async (snapshot, context) => {
@@ -1067,6 +1155,33 @@ export interface ClienteToken {
     name: string;
 }
 
+export interface NegocioPerfil {
+    abierto: boolean
+    autorizado: boolean
+    categoria: string
+    contacto: string
+    correo: string
+    plan: string
+    descripcion: string
+    direccion: Direccion
+    entrega: string
+    envio?: number
+    formas_pago: FormaPago
+    id: string
+    logo: string
+    nombre: string
+    pass: string
+    portada: string
+    preparacion?: number
+    productos: number
+    region: string
+    subCategoria: string[]
+    telefono: string
+    tipo: string
+    whats?: string
+    repartidores_propios: any
+}
+
 export interface Pedido {
     aceptado: number;
     categoria: string;
@@ -1091,17 +1206,17 @@ export interface Pedido {
 }
 
 export interface InfoFunction {
-    abierto: boolean;
-    calificaicones: number;
-    categoria: string;
-    cuenta: string;
-    foto: string;
-    idNegocio: string;
-    nombre: string;
-    promedio: number;
-    subCategoria: string[];
-    tipo: string;
-    visitas: number;
+    abierto: boolean
+    calificaicones: number
+    categoria: string
+    plan: string
+    foto: string
+    idNegocio: string
+    nombre: string
+    promedio: number
+    subCategoria: string[]
+    tipo: string
+    visitas: number
 }
 
 export interface Repartidor {
@@ -1127,6 +1242,7 @@ export interface RepartidorAsociado {
     token: string;
     id: string;
     promedio: number;
+    maneja_efectivo: boolean;
 }
 
 export interface Negocio {
