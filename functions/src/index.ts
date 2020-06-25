@@ -728,9 +728,6 @@ exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTempora
                 // Info detalles
             const detalles = {
             descripcion: negocio.descripcion,
-            direccion: negocio.direccion.direccion,
-            lat: negocio.direccion.lat,
-            lng: negocio.direccion.lng,
             telefono: negocio.telefono
             }
             await admin.database().ref(`negocios/detalles/${negocio.categoria}/${negocio.id}`).update(detalles)
@@ -738,8 +735,6 @@ exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTempora
                 // Info datos-pedido & preparacion if tipo productos
             if (negocio.tipo === 'productos') {
             const datosPedido = {
-              direccion: negocio.direccion,
-              envio: negocio.envio || 0,
               entrega: negocio.entrega,
               telefono: negocio.telefono,
               formas_pago: negocio.formas_pago
