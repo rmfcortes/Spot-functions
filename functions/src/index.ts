@@ -599,7 +599,7 @@ exports.onCalificacionAdded = functions.database.ref('usuarios/{idCliente}/pedid
         const idNegocio = calificacion.negocio.idNegocio
         const idRepartidor = calificacion.repartidor.idRepartidor
         const region = calificacion.region
-        const fecha = formatDate(calificacion.creado)
+        const fecha = await formatDate(calificacion.creado)
         await admin.database().ref(`pedidos/historial/${region}/por_repartidor/${idRepartidor}/${fecha}/${idPedido}/calificacion`).set(calificacion)
         await admin.database().ref(`pedidos/historial/${region}/por_negocio/${idNegocio}/${fecha}${idPedido}/calificacion`).set(calificacion)
         await admin.database().ref(`pedidos/historial/${region}/por_fecha/${fecha}/${idPedido}/calificacion`).set(calificacion)
@@ -627,13 +627,17 @@ exports.onCalificacionAdded = functions.database.ref('usuarios/{idCliente}/pedid
                 return admin.database().ref(`negocios/preview/${region}/${info.categoria}/todos/cerrados/${idNegocio}`).transaction(datas => calificaNegocio(datas, calificacion))
             }
         })
-        .then(async (datas: any) => {
-            const cal = {
-                calificaciones: datas.calificaciones,
-                promedio: datas.promedio
+        .then(async (transactionResult: any) => {
+            if (transactionResult.committed) {
+                const infoCali = transactionResult.snapshot.val()
+                const cal = {
+                    calificaciones: infoCali.calificaciones,
+                    promedio: infoCali.promedio
+                }
+                await admin.database().ref(`functions/${region}/${idNegocio}`).update(cal)
+                return admin.database().ref(`busqueda/${region}/${idNegocio}`).update(cal)
             }
-            await admin.database().ref(`functions/${region}/${idNegocio}`).update(cal)
-            return admin.database().ref(`busqueda/${region}/${idNegocio}`).update(cal)
+            return null
         })
         .catch(err => console.log(err))
     })
