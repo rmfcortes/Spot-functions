@@ -323,7 +323,7 @@ exports.onPedidoTerminado = functions.database.ref('asignados/{idRepartidor}/{id
         if (pedido.entregado || pedido.cancelado_by_negocio || pedido.cancelado_by_repartidor || pedido.cancelado_by_user) {
             const date = await formatDate(pedido.createdAt)
             await admin.database().ref(`pedidos/historial/${pedido.region}/por_fecha/${date}/${idPedido}`).update(pedido)
-            await admin.database().ref(`pedidos/historial/${pedido.region}/por_repartidor/${idRepartidor}/${date}/${idPedido}`).set(pedido)
+            if (pedido.repartidor?.externo) await admin.database().ref(`pedidos/historial/${pedido.region}/por_repartidor/${idRepartidor}/${date}/${idPedido}`).set(pedido)
             await admin.database().ref(`pedidos/historial/${pedido.region}/por_negocio/${pedido.negocio.idNegocio}/${date}/${idPedido}`).set(pedido)
             await admin.database().ref(`pedidos/activos/${pedido.negocio.idNegocio}/cantidad`).transaction(cantidad => cantidad ? cantidad - 1 : 0)
             await admin.database().ref(`pedidos/activos/${pedido.negocio.idNegocio}/detalles/${pedido.id}`).remove()
@@ -601,7 +601,7 @@ exports.onCalificacionAdded = functions.database.ref('usuarios/{idCliente}/pedid
         const region = calificacion.region
         const fecha = await formatDate(calificacion.creado)
         await admin.database().ref(`pedidos/historial/${region}/por_repartidor/${idRepartidor}/${fecha}/${idPedido}/calificacion`).set(calificacion)
-        await admin.database().ref(`pedidos/historial/${region}/por_negocio/${idNegocio}/${fecha}${idPedido}/calificacion`).set(calificacion)
+        await admin.database().ref(`pedidos/historial/${region}/por_negocio/${idNegocio}/${fecha}/${idPedido}/calificacion`).set(calificacion)
         await admin.database().ref(`pedidos/historial/${region}/por_fecha/${fecha}/${idPedido}/calificacion`).set(calificacion)
         await admin.database().ref(`rate/detalles/${idNegocio}/${idPedido}`).update(calificacion.negocio)
         await admin.database().ref(`rate/resumen/${idNegocio}`).transaction(data => calificaNegocio(data, calificacion))
@@ -1348,6 +1348,7 @@ export interface MensajeCliente {
     nombre: string;
     foto: string;
 }
+
 export interface MensajeRepOSop {
     isMe: boolean;
     createdAt: number;
