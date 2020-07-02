@@ -421,7 +421,7 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
             }
             return null
         })
-        .then(() => sendFCMPedido(repartidores[0].token, 'Tienes un nuevo pedido', pedido))
+        .then(() => sendFCMPedido(repartidores[0].token, 'Tienes un nuevo pedido. Gana: $' + pedido.envio + pedido.propina, pedido))
         .then(() => pedido.last_notificado = repartidorId)
         .then(() => {
             const notification = {
@@ -436,6 +436,8 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
                 cliente_lat: pedido.cliente.direccion.lat.toString(),
                 cliente_lng: pedido.cliente.direccion.lng.toString(),
                 notificado: pedido.last_notification.toString(),
+                ganancia: pedido.envio.toString(),
+                propina: pedido.propina.toString()
             }
             return admin.database().ref(`notifications/${repartidorId}/${idPedido}`).set(notification)
         })
@@ -1123,6 +1125,8 @@ function sendFCMPedido(token: string, mensaje: string, pedido: Pedido) {
             cliente_lng: pedido.cliente.direccion.lng.toString(),
             createdAt: pedido.createdAt.toString(),
             notificado: pedido.last_notification.toString(),
+            ganancia: pedido.envio.toString(),
+            propina: pedido.propina.toString()
         }
       };
       const options = {
@@ -1188,6 +1192,8 @@ export interface Pedido {
     createdAt: number;
     entrega: string;
     entregado?: number;
+    envio: number;
+    propina: number;
     fecha: string;
     formaPago: FormaPago;
     id: string;
