@@ -25,7 +25,7 @@ exports.request = functions.https.onRequest((request, response) => {
             .catch(err => response.status(400).send('No pudimos completar el registro ' + err))
         } else {
             return doCharge(data)
-            .then(() => response.status(200).send('Cargo autorizado'))
+            .then((idOrder: string) => response.status(200).send(idOrder))
             .catch((err: any) => response.status(400).send('No pudimos hacer el cargo ' + err))
         }
 
@@ -126,28 +126,21 @@ function addCard(idConekta: string, token: string) {
     });
 }
 
-function doCharge(pedido: Pedido) {
-    console.log('Do charge');
+function doCharge(pedido: Pedido): Promise<string> {
     const items: Item[] = []
-    let idConekta: string;
+    let idConekta: string
     return new Promise((resolve, reject) => {        
         return admin.database().ref(`usuarios/${pedido.cliente.uid}/forma-pago/idConekta`).once('value')
         .then((snp) => snp.val())
         .then(idCon => idConekta = idCon)
         .then(() => conekta.Customer.find(idConekta))
         .then(cliente => {
-            console.log(pedido.formaPago.id);
             cliente.update({
                 default_payment_source_id: pedido.formaPago.id
             },
             function (err: any, customer: any){
-                if (err) {
-                    console.log(err);
-                    reject(err)
-                }
-                console.log(customer.toObject());
+                if (err) reject(err)
                 for (const producto of pedido.productos) {
-                    console.log(producto);
                     const item: Item = {
                         id: producto.id,
                         name: producto.nombre,
@@ -156,7 +149,33 @@ function doCharge(pedido: Pedido) {
                     }
                     items.push(item)
                 }
-                console.log(items);
+                if (pedido.envio) {
+                    const item: Item = {
+                        id: 'envio',
+                        name: 'Envio',
+                        unit_price: pedido.envio * 100,
+                        quantity: 1
+                    }
+                    items.push(item)
+                }                
+                if (pedido.propina) {
+                    const item: Item = {
+                        id: 'propina',
+                        name: 'Propina',
+                        unit_price: pedido.propina * 100,
+                        quantity: 1
+                    }
+                    items.push(item)
+                }                
+                if (pedido.comision) {
+                    const item: Item = {
+                        id: 'comision',
+                        name: 'Comision',
+                        unit_price: pedido.comision * 100,
+                        quantity: 1
+                    }
+                    items.push(item)
+                }
                 conekta.Order.create({
                     currency: 'MXN',
                     customer_info: {
@@ -169,21 +188,26 @@ function doCharge(pedido: Pedido) {
                           } 
                     }]
                 })
-                .then((result: any) => {
-                    console.log('Cargo autorizado');
-                    console.log(result);
-                    console.log(result.toObject());
-                    resolve(true)
-                })
-                .catch((erra: any) => {
-                    console.log('Error');
-                    console.log(erra);
-                    console.log(erra.details[0].message)
-                    reject(erra.details[0].message)
-                })
+                .then(async (result: any) => resolve(result.toObject().id))
+                .catch((erra: any) => reject(erra.details[0].message))
             })
         })
     });
+}
+
+function doRefund(pedido: Pedido): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+        
+        conekta.Order.find(pedido.idOrder, function (err: any, order: any) {
+            order.createRefund({
+                reason: 'other',
+            }, function (erre: any, res: any) {
+                if (erre) reject()
+                else resolve()
+            }
+            )
+        })
+    })
 }
 
 export interface Item {
@@ -224,13 +248,10 @@ exports.pedidoCreado = functions.database.ref('usuarios/{uid}/pedidos/activos/{i
         return admin.database().ref(`tokens/${idNegocio}`).once('value')
         .then(data => {
             const token = data.val()
-            if (token) {
-                return sendFCM(token, 'Nuevo pedido')
-            } else {
-                return null;
-            }
+            if (token) return sendFCM(token, 'Nuevo pedido')
+            else return null
         })
-        .catch(err => console.log(err));
+        .catch(err => console.log(err))
     })
 
 exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/activos/{idNegocio}/detalles/{idPedido}')
@@ -241,9 +262,10 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
         if (before === after) return null
         let recienAceptado = false
         // Lógica pedido aceptado
+        const idCliente = after.cliente.uid
+        const date = await formatDate(after.createdAt)
         if (!before.aceptado && after.aceptado) {
             recienAceptado = true
-            const idCliente = after.cliente.uid
             if (after.entrega === 'inmediato') {
                 const avance2: Avance[] = [
                     {
@@ -275,13 +297,12 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
                 }
                 await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}/avances`).push(avance)
             }
-            const date = await formatDate(after.createdAt)
             await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}`).set(after)
             await admin.database().ref(`pedidos/historial/${after.region}/por_fecha/${date}/${idPedido}`).update(after)
             await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/detalles/${idPedido}`).update(after)
             if (after.repartidor) await admin.database().ref(`pedidos/seguimiento_admin/${date}/${idPedido}`).remove()
             else await admin.database().ref(`pedidos/seguimiento_admin/${date}/${idPedido}`).update(after)
-            return admin.database().ref(`usuarios/${idCliente}/token`).once('value')
+            admin.database().ref(`usuarios/${idCliente}/token`).once('value')
             .then(dataVal => dataVal ? dataVal.val() : null)
             .then(token => token ? sendPushNotification(token, `${after.negocio.nombreNegocio} está preparando tu pedido`) : null)
             .catch((err) => console.log(err))
@@ -290,12 +311,10 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
         // Lógica repartidor asignado
         if (before.repartidor !== after.repartidor && after.repartidor && !recienAceptado) {
             const idNegocio = context.params.idNegocio
-            return admin.database().ref(`pedidos/activos/${idNegocio}/detalles/${idPedido}`).once('value')
+            admin.database().ref(`pedidos/activos/${idNegocio}/detalles/${idPedido}`).once('value')
             .then(dataVal => dataVal.val())
             .then(async (pedido: Pedido) => {
                 pedido.negocio.idNegocio = idNegocio
-                const idCliente = pedido.cliente.uid
-                const date = await formatDate(pedido.createdAt)
                 await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}/repartidor`).transaction(rep => {
                     if (rep) {
                         const error = 'este pedido ya tiene repartidor'
@@ -303,7 +322,7 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
                     } else return after.repartidor
                 })
                 await admin.database().ref(`asignados/${after.repartidor?.id}/${idPedido}`).update(pedido)
-                await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/detalles/${idPedido}`).update(after)
+                await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/detalles/${idPedido}`).update(pedido)
                 await admin.database().ref(`pedidos/historial/${pedido.region}/por_fecha/${date}/${idPedido}`).update(pedido)
                 await admin.database().ref(`pedidos/seguimiento_admin/${date}`).remove()
                 return admin.database().ref(`usuarios/${idCliente}/token`).once('value')
@@ -311,6 +330,20 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
             .then(tokenVal => tokenVal ? tokenVal.val() : null)
             .then(token => token ? sendPushNotification(token, 'Repartidor asignado: ' + after.repartidor?.nombre) : null)
             .catch(err => console.log(err))
+        }
+
+        if (before.cancelado_by_negocio !== after.cancelado_by_negocio && after.cancelado_by_negocio) {
+            if (after.idOrder) await doRefund(after)
+            await admin.database().ref(`pedidos/historial/${after.region}/por_negocio/${after.negocio.idNegocio}/${date}/${idPedido}`).set(after)
+            await admin.database().ref(`pedidos/historial/${after.region}/por_fecha/${date}/${idPedido}`).update(after)
+            await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/cantidad`).transaction(cantidad => cantidad ? cantidad - 1 : 0)
+            await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/detalles/${idPedido}`).remove()
+            await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}`).set(after)
+            await admin.database().ref(`pedidos/seguimiento_admin/${date}/${idPedido}`).remove()
+            admin.database().ref(`usuarios/${idCliente}/token`).once('value')
+            .then(dataVal => dataVal ? dataVal.val() : null)
+            .then(token => token ? sendPushNotification(token, `${after.negocio.nombreNegocio} ha rechazado el pedido`) : null)
+            .catch((err) => console.log(err))
         }
         return null
     })
@@ -1208,6 +1241,9 @@ export interface Pedido {
     cancelado_by_user?: number;
     cancelado_by_negocio?: number;
     cancelado_by_repartidor?: number;
+    razon_cancelacion?: string;
+    idOrder?: string;
+    comision: number;
 }
 
 export interface InfoFunction {
