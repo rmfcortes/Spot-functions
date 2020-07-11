@@ -33,20 +33,21 @@ exports.request = functions.https.onRequest((request, response) => {
 })
 
 function newCard(cliente: ClienteToken) {
-    let formaPago: any
-    return admin.database().ref(`usuarios/${cliente.idCliente}/forma-pago/idConekta`).once('value')
-    .then(res => res.val())
-    .then(idConekta => {
-        console.log(idConekta);
-        if (!idConekta) {
-            return createUser(cliente)
-        }
-        return addCard(idConekta, cliente.token)
+    return new Promise((resolve, reject) => {        
+        let formaPago: any
+        return admin.database().ref(`usuarios/${cliente.idCliente}/forma-pago/idConekta`).once('value')
+        .then(res => res.val())
+        .then(idConekta => {
+            if (!idConekta) return createUser(cliente)
+            return addCard(idConekta, cliente.token)
+        })
+        .then((customer: any) => formaPago = customer)
+        .then(() => doPreCharge(cliente.idCliente, formaPago.idCard))
+        .then(() => admin.database().ref(`usuarios/${cliente.idCliente}/forma-pago/idConekta`).set(formaPago.idConekta))
+        .then(() => admin.database().ref(`usuarios/${cliente.idCliente}/forma-pago/nueva`).set(formaPago.idCard))
+        .then(() => resolve())
+        .catch(err => reject(err))
     })
-    .then((customer: any) => formaPago = customer)
-    .then(() => admin.database().ref(`usuarios/${cliente.idCliente}/forma-pago/idConekta`).set(formaPago.idConekta))
-    .then(() => admin.database().ref(`usuarios/${cliente.idCliente}/forma-pago/nueva`).set(formaPago.idCard))
-    .catch(err => console.log(err))
 }
 
 function createUser(cliente: ClienteToken) {
@@ -114,8 +115,6 @@ function addCard(idConekta: string, token: string) {
                 type: 'card',
                 token_id: token
             }, function(erre: any, res: any) {
-                console.log('Tarjeta agregada');
-                console.log(res);
                 const newCliente = {
                     idCard: res.id,
                     idConekta: idConekta
@@ -124,6 +123,44 @@ function addCard(idConekta: string, token: string) {
             })
         })
     });
+}
+
+function doPreCharge(uid: string, pagoId: string): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+        let idConekta: string
+        return admin.database().ref(`usuarios/${uid}/forma-pago/idConekta`).once('value')
+        .then((snp) => snp.val())
+        .then(idCon => idConekta = idCon)
+        .then(() => conekta.Customer.find(idConekta))
+        .then(cliente => {
+            cliente.update({
+                default_payment_source_id: pagoId
+            },
+            function (err: any, customer: any){
+                if (err) reject(err)                           
+                const item: Item[] = [{
+                    id: 'cargo_seguridad',
+                    name: 'Cargo seguridad',
+                    unit_price: 10 * 100,
+                    quantity: 1
+                }]
+                conekta.Order.create({
+                    currency: 'MXN',
+                    customer_info: {
+                        customer_id: idConekta
+                    },
+                    line_items: item,
+                    charges: [{
+                        payment_method: {
+                            type: 'default'
+                          } 
+                    }]
+                })
+                .then(async (result: any) => resolve(result.toObject().id))
+                .catch((erra: any) => reject(erra.details[0].message))
+            })
+        })
+    })
 }
 
 function doCharge(pedido: Pedido): Promise<string> {
