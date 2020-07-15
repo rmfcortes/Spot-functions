@@ -304,7 +304,7 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
         if (!before.aceptado && after.aceptado) {
             recienAceptado = true
             if (after.entrega === 'inmediato') {
-                const avance2: Avance[] = [
+                after.avances = [
                     {
                         fecha: after.aceptado,
                         concepto: `${after.negocio.nombreNegocio} ha aceptado tu pedido`
@@ -326,13 +326,11 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
                         concepto: `Pedido entregado`
                     },
                 ]
-                await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}/avances`).set(avance2)
             } else {
-                const avance: Avance = {
+                after.avances = [{
                     fecha: Date.now(),
                     concepto: `${after.negocio.nombreNegocio} ha aceptado tu pedido`
-                }
-                await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}/avances`).push(avance)
+                }]
             }
             await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}`).set(after)
             await admin.database().ref(`pedidos/historial/${after.region}/por_fecha/${date}/${idPedido}`).update(after)
@@ -346,12 +344,11 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
         }
 
         // Lógica repartidor asignado
+        const idNegocio = context.params.idNegocio
         if (before.repartidor !== after.repartidor && after.repartidor && !recienAceptado) {
-            const idNegocio = context.params.idNegocio
             admin.database().ref(`pedidos/activos/${idNegocio}/detalles/${idPedido}`).once('value')
             .then(dataVal => dataVal.val())
             .then(async (pedido: Pedido) => {
-                pedido.negocio.idNegocio = idNegocio
                 await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}/repartidor`).transaction(rep => {
                     if (rep) {
                         const error = 'este pedido ya tiene repartidor'
@@ -359,7 +356,6 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
                     } else return after.repartidor
                 })
                 await admin.database().ref(`asignados/${after.repartidor?.id}/${idPedido}`).update(pedido)
-                await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/detalles/${idPedido}`).update(pedido)
                 await admin.database().ref(`pedidos/historial/${pedido.region}/por_fecha/${date}/${idPedido}`).update(pedido)
                 await admin.database().ref(`pedidos/seguimiento_admin/${date}`).remove()
                 return admin.database().ref(`usuarios/${idCliente}/token`).once('value')
@@ -382,6 +378,12 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
             .then(token => token ? sendPushNotification(token, `${after.negocio.nombreNegocio} ha rechazado el pedido`) : null)
             .catch((err) => console.log(err))
         }
+
+        if (before.avances.length < after.avances.length) {
+            await admin.database().ref(`pedidos/historial/${after.region}/por_fecha/${date}/${idPedido}`).update(after)
+            await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}`).update(after)
+        }
+
         return null
     })
 
@@ -1257,6 +1259,7 @@ export interface NegocioPerfil {
 
 export interface Pedido {
     aceptado: number;
+    avances: Avance[];
     categoria: string;
     cliente: Cliente;
     createdAt: number;
