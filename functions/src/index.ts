@@ -304,35 +304,6 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
         const date = await formatDate(after.createdAt)
         if (!before.aceptado && after.aceptado) {
             recienAceptado = true
-            if (after.entrega === 'inmediato') {
-                after.avances = [
-                    {
-                        fecha: after.aceptado,
-                        concepto: `${after.negocio.nombreNegocio} ha aceptado tu pedido`
-                    },
-                    {
-                        fecha: after.aceptado,
-                        concepto: `${after.negocio.nombreNegocio} está preparando tus productos`
-                    },
-                    {
-                        fecha: 0,
-                        concepto: `El repartidor tiene tus productos y está en camino`
-                    },
-                    {
-                        fecha: 0,
-                        concepto: `El repartidor ha llegado a tu domicilio`
-                    },
-                    {
-                        fecha: 0,
-                        concepto: `Pedido entregado`
-                    },
-                ]
-            } else {
-                after.avances = [{
-                    fecha: Date.now(),
-                    concepto: `${after.negocio.nombreNegocio} ha aceptado tu pedido`
-                }]
-            }
             await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}`).set(after)
             await admin.database().ref(`pedidos/historial/${after.region}/por_fecha/${date}/${idPedido}`).update(after)
             await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/detalles/${idPedido}`).update(after)
@@ -358,7 +329,7 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
                 })
                 await admin.database().ref(`asignados/${after.repartidor?.id}/${idPedido}`).update(pedido)
                 await admin.database().ref(`pedidos/historial/${pedido.region}/por_fecha/${date}/${idPedido}`).update(pedido)
-                await admin.database().ref(`pedidos/seguimiento_admin/${date}`).remove()
+                await admin.database().ref(`pedidos/seguimiento_admin/${date}/${idPedido}`).remove()
                 return admin.database().ref(`usuarios/${idCliente}/token`).once('value')
             })
             .then(tokenVal => tokenVal ? tokenVal.val() : null)
@@ -380,7 +351,7 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
             .catch((err) => console.log(err))
         }
 
-        if (before.avances.length < after.avances.length) {
+        if (before.avances.length < after.avances.length && !recienAceptado) {
             await admin.database().ref(`pedidos/historial/${after.region}/por_fecha/${date}/${idPedido}`).update(after)
             await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}`).update(after)
         }
@@ -418,11 +389,6 @@ exports.onProdsRecolectados = functions.database.ref('asignados/{idRepartidor}/{
             const date = await formatDate(after.createdAt)
             await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/detalles/${idPedido}`).update(after)
             await admin.database().ref(`pedidos/historial/${after.region}/por_fecha/${date}/${idPedido}`).update(after)
-            const avance: Avance = {
-                concepto: `${after.repartidor?.nombre} tiene tus productos y va en camino a tu destino`,
-                fecha: Date.now()
-            }
-            after.avances.push(avance)
             await admin.database().ref(`usuarios/${after.cliente.uid}/pedidos/activos/${idPedido}`).update(after)
             
         }
@@ -465,7 +431,8 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
         let historial_pedido: Pedido
         let repartidores: RepartidorAsociado[]
         const date = await formatDate(pedido.createdAt)
-        const ganancia = pedido.envio + pedido.propina
+        let ganancia = pedido.envio + pedido.propina
+        ganancia = pedido.banderazo ? ganancia + pedido.banderazo : ganancia
         // Get repartidores asociados
         return admin.database().ref(`pedidos/repartidor_pendiente/${idNegocio}/${idPedido}`).remove()
         .then(() => admin.database().ref(`repartidores_asociados_info/${pedido.region}/preview`).orderByChild('activo').equalTo(true).once('value'))
@@ -519,6 +486,7 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
         .then(() => sendFCMPedido(repartidores[0].token, 'Tienes un nuevo pedido. Gana: $' + ganancia + ' MXN', pedido))
         .then(() => pedido.last_notificado = repartidorId)
         .then(() => {
+            const ban = pedido.banderazo ? pedido.banderazo + pedido.envio : pedido.envio
             const notification = {
                 idPedido: pedido.id,
                 idNegocio: pedido.negocio.idNegocio,
@@ -531,7 +499,7 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
                 cliente_lat: pedido.cliente.direccion.lat.toString(),
                 cliente_lng: pedido.cliente.direccion.lng.toString(),
                 notificado: pedido.last_solicitud.toString(),
-                ganancia: pedido.envio.toString(),
+                ganancia: ban.toString(),
                 propina: pedido.propina ? pedido.propina.toString() : '0'
             }
             return admin.database().ref(`notifications/${repartidorId}/${idPedido}`).set(notification)
@@ -562,6 +530,10 @@ exports.pedidoTomadoRepartidor = functions.database.ref('pendientes_aceptacion/{
         .then((repartidor: Repartidor) => {
             repartidor.externo = true
             pedido.repartidor = repartidor
+            pedido.avances.push({
+                concepto: 'Tu repartidor ha sido asignado y va en camino por tus productos',
+                fecha: Date.now()
+            })
             return admin.database().ref(`usuarios/${pedido.cliente.uid}/pedidos/activos/${pedido.id}/repartidor`).transaction(rep => {
                 if (rep) {
                     console.log('Pedido tomado por otro repartidor')
@@ -807,7 +779,7 @@ exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTempora
                 displayName: negocio.nombre,
                 email: negocio.correo,
                 password: negocio.pass,
-            });
+            })
             negocio.id = newPerfil.uid
 
                 // Info perfil
@@ -820,7 +792,7 @@ exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTempora
                 portada: negocio.portada,
                 telefono: negocio.telefono,
                 whats: negocio.whats,
-              };
+              }
             } else {
               datosPasillo = {
                 portada: negocio.portada,
@@ -1203,6 +1175,7 @@ function sendFCM(token: string, mensaje: string) {
 }
 
 function sendFCMPedido(token: string, mensaje: string, pedido: Pedido) {
+    const ban = pedido.banderazo ? pedido.banderazo + pedido.envio : pedido.envio
     const payload: admin.messaging.MessagingPayload = {
         notification: {
             title: 'Spot',
@@ -1223,8 +1196,8 @@ function sendFCMPedido(token: string, mensaje: string, pedido: Pedido) {
             cliente_lng: pedido.cliente.direccion.lng.toString(),
             createdAt: pedido.createdAt.toString(),
             notificado: pedido.last_solicitud.toString(),
-            ganancia: pedido.envio.toString(),
-            propina: pedido.propina.toString()
+            ganancia: ban.toString(),
+            propina: pedido.propina ? pedido.propina.toString() : '0'
         }
       };
       const options = {
@@ -1311,6 +1284,7 @@ export interface Pedido {
     idOrder?: string;
     comision: number;
     recolectado?: boolean;
+    banderazo?: number;
 }
 
 export interface InfoFunction {
