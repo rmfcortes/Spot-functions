@@ -17,8 +17,6 @@ exports.request = functions.https.onRequest((request, response) => {
         response.set('Access-Control-Allow-Credentials', 'true');
         const origen = request.body.origen;
         const data = request.body.data;
-        console.log(origen);
-        console.log(data);
         if (origen === 'newCard') {
             return newCard(data)
             .then(() => response.status(200).send('Bien hecho esponja'))
@@ -178,10 +176,11 @@ function doCharge(pedido: Pedido): Promise<string> {
             function (err: any, customer: any){
                 if (err) reject(err)
                 for (const producto of pedido.productos) {
+                    producto.total = Math.round((producto.total + Number.EPSILON) * 100) / 100
                     const item: Item = {
                         id: producto.id,
                         name: producto.nombre,
-                        unit_price: producto.total * 100,
+                        unit_price: Math.round(producto.total * 100),
                         quantity: 1
                     }
                     items.push(item)
@@ -190,7 +189,7 @@ function doCharge(pedido: Pedido): Promise<string> {
                     const item: Item = {
                         id: 'envio',
                         name: 'Envio',
-                        unit_price: pedido.envio * 100,
+                        unit_price: Math.round(pedido.envio * 100),
                         quantity: 1
                     }
                     items.push(item)
@@ -199,7 +198,7 @@ function doCharge(pedido: Pedido): Promise<string> {
                     const item: Item = {
                         id: 'propina',
                         name: 'Propina',
-                        unit_price: pedido.propina * 100,
+                        unit_price: Math.round(pedido.propina * 100),
                         quantity: 1
                     }
                     items.push(item)
@@ -208,7 +207,7 @@ function doCharge(pedido: Pedido): Promise<string> {
                     const item: Item = {
                         id: 'comision',
                         name: 'Comision',
-                        unit_price: pedido.comision * 100,
+                        unit_price: Math.round(pedido.comision * 100),
                         quantity: 1
                     }
                     items.push(item)
@@ -226,7 +225,11 @@ function doCharge(pedido: Pedido): Promise<string> {
                     }]
                 })
                 .then(async (result: any) => resolve(result.toObject().id))
-                .catch((erra: any) => reject(erra.details[0].message))
+                .catch((erra: any) => {
+                    console.log('Error');
+                    console.log(erra);
+                    reject(erra.details[0].message)
+                })
             })
         })
     });
