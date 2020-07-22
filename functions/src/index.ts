@@ -552,6 +552,7 @@ exports.pedidoTomadoRepartidor = functions.database.ref('pendientes_aceptacion/{
         .then(() => admin.database().ref(`pedidos/activos/${pedido.negocio.idNegocio}/detalles/${idPedido}`).update(pedido))
         .then(() => admin.database().ref(`notifications/${pedido.last_notificado}/${idPedido}`).remove())
         .then(() => admin.database().ref(`pendientes_aceptacion/${idRepartidor}/${idPedido}`).remove())
+        .then(() => admin.database().ref(`pedidos/activos/${pedido.negocio.idNegocio}/repartidor_pendiente/${idPedido}`).remove())
         })
         .catch(async (err) => {
             await admin.database().ref(`pendientes_aceptacion/${idRepartidor}/${idPedido}/${idPedido}`).remove()
