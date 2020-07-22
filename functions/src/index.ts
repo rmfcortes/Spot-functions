@@ -15,8 +15,8 @@ exports.request = functions.https.onRequest((request, response) => {
     cors(request, response, () => {
         response.set('Access-Control-Allow-Origin', '*');
         response.set('Access-Control-Allow-Credentials', 'true');
-        const origen = request.body.origen;
-        const data = request.body.data;
+        const origen = request.body.origen
+        const data = request.body.data
         if (origen === 'newCard') {
             return newCard(data)
             .then(() => response.status(200).send('Bien hecho esponja'))
@@ -354,7 +354,7 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
             .catch((err) => console.log(err))
         }
 
-        if (before.avances.length < after.avances.length && !recienAceptado) {
+        if (!before.avances && after.avances && !recienAceptado || before.avances && before.avances.length < after.avances.length && !recienAceptado) {
             await admin.database().ref(`pedidos/historial/${after.region}/por_fecha/${date}/${idPedido}`).update(after)
             await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}`).update(after)
         }
@@ -388,6 +388,7 @@ exports.onProdsRecolectados = functions.database.ref('asignados/{idRepartidor}/{
         const after: Pedido = change.after.val()
         const before: Pedido = change.before.val()
         if (before === after) return null
+        if (after.entregado) return null
         if (!before.recolectado && after.recolectado) {
             const date = await formatDate(after.createdAt)
             await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/detalles/${idPedido}`).update(after)
@@ -911,7 +912,7 @@ exports.onNewRepartidor = functions.database.ref('nuevoColaborador/{idNegocio}/{
         try {
             const newUser = await admin.auth().createUser({
                 disabled: false,
-                displayName: repartidor.detalles.user,
+                displayName: repartidor.preview.nombre,
                 email: repartidor.detalles.correo,
                 password: repartidor.detalles.pass,
                 photoURL: repartidor.preview.foto || null,
