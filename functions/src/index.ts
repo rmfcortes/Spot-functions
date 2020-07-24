@@ -284,7 +284,7 @@ exports.pedidoCreado = functions.database.ref('usuarios/{uid}/pedidos/activos/{i
         await admin.database().ref(`pedidos/activos/${idNegocio}/detalles/${idPedido}`).set(pedido)
         await admin.database().ref(`pedidos/activos/${idNegocio}/cantidad`).transaction(cantidad => cantidad ? cantidad + 1 : 1)
         await admin.database().ref(`pedidos/historial/${pedido.region}/por_fecha/${date}/${idPedido}`).set(pedido)
-        await admin.database().ref(`pedidos/seguimiento_admin/${date}/${idPedido}`).set(pedido)
+        await admin.database().ref(`pedidos/seguimiento_admin/${idPedido}`).set(pedido)
         return admin.database().ref(`tokens/${idNegocio}`).once('value')
         .then(data => {
             const token = data.val()
@@ -300,7 +300,7 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
         const after: Pedido = change.after.val()
         const before: Pedido = change.before.val()
         if (before === after) return null
-        if (!before.recolectado && after.recolectado) return null
+        if (!before.recolectado && after.recolectado && before.avances === after.avances) return null
         let recienAceptado = false
         // Lógica pedido aceptado
         const idCliente = after.cliente.uid
@@ -310,8 +310,8 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
             await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}`).set(after)
             await admin.database().ref(`pedidos/historial/${after.region}/por_fecha/${date}/${idPedido}`).update(after)
             await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/detalles/${idPedido}`).update(after)
-            if (after.repartidor) await admin.database().ref(`pedidos/seguimiento_admin/${date}/${idPedido}`).remove()
-            else await admin.database().ref(`pedidos/seguimiento_admin/${date}/${idPedido}`).update(after)
+            if (after.repartidor) await admin.database().ref(`pedidos/seguimiento_admin/${idPedido}`).remove()
+            else await admin.database().ref(`pedidos/seguimiento_admin/${idPedido}`).update(after)
             admin.database().ref(`usuarios/${idCliente}/token`).once('value')
             .then(dataVal => dataVal ? dataVal.val() : null)
             .then(token => token ? sendPushNotification(token, `${after.negocio.nombreNegocio} está preparando tu pedido`) : null)
@@ -332,7 +332,7 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
                 })
                 await admin.database().ref(`asignados/${after.repartidor?.id}/${idPedido}`).update(pedido)
                 await admin.database().ref(`pedidos/historial/${pedido.region}/por_fecha/${date}/${idPedido}`).update(pedido)
-                await admin.database().ref(`pedidos/seguimiento_admin/${date}/${idPedido}`).remove()
+                await admin.database().ref(`pedidos/seguimiento_admin/${idPedido}`).remove()
                 return admin.database().ref(`usuarios/${idCliente}/token`).once('value')
             })
             .then(tokenVal => tokenVal ? tokenVal.val() : null)
@@ -347,7 +347,7 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
             await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/cantidad`).transaction(cantidad => cantidad ? cantidad - 1 : 0)
             await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/detalles/${idPedido}`).remove()
             await admin.database().ref(`usuarios/${idCliente}/pedidos/activos/${idPedido}`).set(after)
-            await admin.database().ref(`pedidos/seguimiento_admin/${date}/${idPedido}`).remove()
+            await admin.database().ref(`pedidos/seguimiento_admin/${idPedido}`).remove()
             admin.database().ref(`usuarios/${idCliente}/token`).once('value')
             .then(dataVal => dataVal ? dataVal.val() : null)
             .then(token => token ? sendPushNotification(token, `${after.negocio.nombreNegocio} ha rechazado el pedido`) : null)
@@ -546,7 +546,7 @@ exports.pedidoTomadoRepartidor = functions.database.ref('pendientes_aceptacion/{
             })
         })
         .then(() => admin.database().ref(`asignados/${idRepartidor}/${pedido.id}`).set(pedido))
-        .then(() => admin.database().ref(`pedidos/seguimiento_admin/${date}/${idPedido}`).remove())
+        .then(() => admin.database().ref(`pedidos/seguimiento_admin/${idPedido}`).remove())
         .then(() => admin.database().ref(`repartidores_asociados_info/${pedido.region}/preview/${idRepartidor}/last_pedido`).set(Date.now()))
         .then(() => admin.database().ref(`pedidos/historial/${notificacion.region}/por_fecha/${date}/${idPedido}`).update(pedido))
         .then(() => admin.database().ref(`pedidos/activos/${pedido.negocio.idNegocio}/detalles/${idPedido}`).update(pedido))
