@@ -288,7 +288,7 @@ exports.pedidoCreado = functions.database.ref('usuarios/{uid}/pedidos/activos/{i
         return admin.database().ref(`tokens/${idNegocio}`).once('value')
         .then(data => {
             const token = data.val()
-            if (token) return sendFCM(token, 'Nuevo pedido')
+            if (token) return sendFCM(token, 'Plaza. Tienes un nuevo pedido',  `Total. ${pedido.total}. Forma de pago: ${pedido.formaPago.tipo}`)
             else return null
         })
         .catch(err => console.log(err))
@@ -487,7 +487,7 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
             }
             return null
         })
-        .then(() => sendFCMPedido(repartidores[0].token, 'Tienes un nuevo pedido. Gana: $' + ganancia + ' MXN', pedido))
+        .then(() => sendFCMPedido(repartidores[0].token, 'Gana: $' + ganancia + ' MXN', pedido))
         .then(() => pedido.last_notificado = repartidorId)
         .then(() => {
             const ban = pedido.banderazo ? pedido.banderazo + pedido.envio : pedido.envio
@@ -541,7 +541,7 @@ exports.pedidoTomadoRepartidor = functions.database.ref('pendientes_aceptacion/{
             return admin.database().ref(`usuarios/${pedido.cliente.uid}/pedidos/activos/${pedido.id}/repartidor`).transaction(rep => {
                 if (rep) {
                     console.log('Pedido tomado por otro repartidor')
-                    throw sendFCM(repartidor.token, 'El pedido ha sido tomado por otro repartidor')
+                    throw sendFCM(repartidor.token, 'Plaza repartidores', 'El pedido ha sido tomado por otro repartidor')
                 } else return repartidor
             })
         })
@@ -1164,10 +1164,10 @@ function sendPushNotification(token: string, msn: string) {
     sendNotification(message)
 }
 
-function sendFCM(token: string, mensaje: string) {
+function sendFCM(token: string, title: string, mensaje: string) {
     const payload: admin.messaging.MessagingPayload = {
         notification: {
-            title: 'Spot',
+            title,
             body: mensaje,
             click_action: 'https://revistaojo-9a8d3.firebaseapp.com',
             icon: 'https://firebasestorage.googleapis.com/v0/b/revistaojo-9a8d3.appspot.com/o/logotipos%2Fic_stat_onesignal_default.png?alt=media&token=be09f858-6a1c-4a52-b5ad-717e1eac1d50'
@@ -1183,7 +1183,7 @@ function sendFCMPedido(token: string, mensaje: string, pedido: Pedido) {
     const ban = pedido.banderazo ? pedido.banderazo + pedido.envio : pedido.envio
     const payload: admin.messaging.MessagingPayload = {
         notification: {
-            title: 'Spot',
+            title: 'Plaza. Pedido disponible',
             body: mensaje,
             click_action: 'https://revistaojo-9a8d3.firebaseapp.com',
             icon: 'https://firebasestorage.googleapis.com/v0/b/revistaojo-9a8d3.appspot.com/o/logotipos%2Fic_stat_onesignal_default.png?alt=media&token=be09f858-6a1c-4a52-b5ad-717e1eac1d50'
