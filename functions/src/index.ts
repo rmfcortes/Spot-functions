@@ -836,7 +836,6 @@ exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTempora
                 .filter((item, i, allItems) => i === allItems.indexOf(item))
                 .join(' ')
             await admin.database().ref(`busqueda/${region}/${negocio.id}/palabras`).set(claves)
-
                 //Listoforo
             return admin.database().ref(`result_negocios/${region}/${idTemporal}`).push('ok')
         } catch (error) {
