@@ -389,7 +389,7 @@ exports.onProdsRecolectados = functions.database.ref('asignados/{idRepartidor}/{
         const before: Pedido = change.before.val()
         if (before === after) return null
         if (after.entregado) return null
-        if (!before.recolectado && after.recolectado) {
+        if (!before.recolectado && after.recolectado || !before.repartidor_llego && after.repartidor_llego) {
             const date = await formatDate(after.createdAt)
             await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/detalles/${idPedido}`).update(after)
             await admin.database().ref(`pedidos/historial/${after.region}/por_fecha/${date}/${idPedido}`).update(after)
@@ -499,6 +499,7 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
                 negocio_lat: pedido.negocio.direccion.lat.toString(),
                 negocio_lng: pedido.negocio.direccion.lng.toString(),
                 cliente: pedido.cliente.nombre,
+                createdAt: pedido.createdAt.toString(),
                 cliente_direccion: pedido.cliente.direccion.direccion,
                 cliente_lat: pedido.cliente.direccion.lat.toString(),
                 cliente_lng: pedido.cliente.direccion.lng.toString(),
@@ -1289,6 +1290,7 @@ export interface Pedido {
     comision: number;
     recolectado?: boolean;
     banderazo?: number;
+    repartidor_llego: boolean;
 }
 
 export interface InfoFunction {
