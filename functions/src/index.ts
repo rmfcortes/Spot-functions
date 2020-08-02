@@ -844,28 +844,60 @@ exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTempora
         }
     })
 
-exports.onProdEliminado = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{pasillo}/{idProducto}')
+exports.onProdEliminadoOrPasilloChange = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{pasillo}/{idProducto}')
     .onDelete(async (snapshot, context) => {
-        const idNegocio = context.params.idNegocio;
-        const idProducto = context.params.idProducto;
-        const producto = snapshot.val();
-        if (producto.mudar) return
+        const idProducto = context.params.idProducto
+        const idNegocio = context.params.idNegocio
+        const tipo = context.params.tipo
+        const producto = snapshot.val()
         const region = await getRegion(idNegocio)
-        return admin.database().ref(`vendidos/${region}/${idProducto}`).remove()
-    });
+        if (tipo === 'productos' && !producto.mudar) {            
+            return admin.database().ref(`vendidos/${region}/${idProducto}`).remove()
+        }
+        if (tipo === 'servicios' && !producto.mudar) {            
+            return admin.database().ref(`vendidos-servicios/${region}/${idProducto}`).remove()
+        }
+        if (producto.mudar) {
+            delete producto.mudar
+            if (tipo === 'productos') {            
+                return admin.database().ref(`vendidos/${region}/${idProducto}`).once('value', snap => {
+                    if (snap.exists()) return admin.database().ref(`vendidos/${region}/${idProducto}`).update(producto)
+                    else return null
+                })
+            }
+            if (tipo === 'servicios') {            
+                return admin.database().ref(`vendidos-servicios/${region}/${idProducto}`).once('value', snap => {
+                    if (snap.exists()) return admin.database().ref(`vendidos-servicios/${region}/${idProducto}`).update(producto)
+                    else return null
+                })
+            }
+            return null
+        }
+        return null
+    })
 
-exports.onProdEdit = functions.database.ref('negocios/productos/{categoria}/{idNegocio}/{subCategoria}/{idProducto}')
+exports.onProdEdit = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{subCategoria}/{idProducto}')
     .onUpdate(async (change, context) => {
         const idProducto = context.params.idProducto
         const idNegocio = context.params.idNegocio
+        const tipo = context.params.tipo
         const after = change.after.val()
         const before = change.before.val()
         if (before === after) return null
         const region = await getRegion(idNegocio)
-        return admin.database().ref(`vendidos/${region}/${idProducto}`).once('value', snapshot => {
-        if (snapshot.exists()) return admin.database().ref(`vendidos/${region}/${idProducto}`).update(after)
-        else return null
-       })
+        if (tipo === 'productos') {            
+            return admin.database().ref(`vendidos/${region}/${idProducto}`).once('value', snapshot => {
+                if (snapshot.exists()) return admin.database().ref(`vendidos/${region}/${idProducto}`).update(after)
+                else return null
+            })
+        }
+        if (tipo === 'servicios') {            
+            return admin.database().ref(`vendidos-servicios/${region}/${idProducto}`).once('value', snapshot => {
+                if (snapshot.exists()) return admin.database().ref(`vendidos-servicios/${region}/${idProducto}`).update(after)
+                else return null
+            })
+        }
+        return null
     })
 
 exports.onCategoriaEdit = functions.database.ref('perfiles/{idNegocio}/categoria')
@@ -1214,14 +1246,12 @@ function sendFCMPedido(token: string, mensaje: string, pedido: Pedido) {
 function getRegion(idNegocio: string) {
     return new Promise((resolve, reject) => {
         admin.database().ref(`perfiles/${idNegocio}/region`).once('value')
-        .then(region => {
-            resolve(region.val());
-        })
+        .then(region => resolve(region.val()))
         .catch(err => {
-            console.log(err);
-            reject(err);
-        });
-    });
+            console.log(err)
+            reject(err)
+        })
+    })
 }
 export interface Avance {
     fecha: number;
