@@ -1,13 +1,13 @@
-import * as functions from 'firebase-functions';
-import * as admin from 'firebase-admin';
+import * as functions from 'firebase-functions'
+import * as admin from 'firebase-admin'
 
-admin.initializeApp();
-const cors = require('cors')({origin: true});
-const conekta = require('conekta');
+const cors = require('cors')({origin: true})
+const conekta = require('conekta')
+admin.initializeApp()
 
-conekta.api_key = 'key_J1cLBV6qz5G5PsGBKP8yKQ';
-conekta.api_version = '2.0.0';
-conekta.locale = 'es';
+conekta.api_key = 'key_J1cLBV6qz5G5PsGBKP8yKQ'
+conekta.api_version = '2.0.0'
+conekta.locale = 'es'
 
 
 // Pagos
@@ -263,29 +263,34 @@ exports.pedidoCreado = functions.database.ref('usuarios/{uid}/pedidos/activos/{i
         const pedido: Pedido = snapshot.val()
         const idPedido = context.params.idPedido
         const idNegocio = pedido.negocio.idNegocio
-        const negocio = pedido.negocio
         const categoria = pedido.categoria
+        const negocio = pedido.negocio
         const region = await getRegion(idNegocio)
         const subCategorias = await getSubcategoria(idNegocio)
         pedido.productos.forEach(async (p) => {
-            const vendidos =  {
-                categoria,
-                descripcion: p.descripcion,
+            const vendido: MasVendido = {
                 id: p.id,
-                idNegocio: negocio.idNegocio,
-                nombre: p.nombre,
-                nombreNegocio: negocio.nombreNegocio,
-                precio: p.precio,
+                categoria,
+                idNegocio,
                 url: p.url,
+                nombre: p.nombre,
+                pasillo: p.pasillo,
+                descripcion: p.descripcion,
+                precio: p.precio ? p.precio : 1,
+                nombreNegocio: negocio.nombreNegocio,
+                agotado: p.agotado ? p.agotado : false,
+                dosxuno: p.dosxuno ? p.dosxuno : false,
+                descuento: p.descuento ? p.descuento : 0,
             }
             await admin.database().ref(`vendidos/${region}/todos/${p.id}/ventas`).transaction(ventas => ventas ? ventas + p.cantidad : p.cantidad)
             await admin.database().ref(`vendidos/${region}/categorias/${categoria}/${p.id}/ventas`).transaction(ventas => ventas ? ventas + p.cantidad : p.cantidad)
             for (const sub of subCategorias) {
                 await admin.database().ref(`vendidos/${region}/subCategorias/${categoria}/${sub}/${p.id}/ventas`).transaction(ventas => ventas ? ventas + p.cantidad : p.cantidad)
-                await admin.database().ref(`vendidos/${region}/subCategorias/${categoria}/${sub}/${p.id}`).update(vendidos)
+                await admin.database().ref(`vendidos/${region}/subCategorias/${categoria}/${sub}/${p.id}`).update(vendido)
+                if (p.pasillo === 'Ofertas') await admin.database().ref(`ofertas/${region}/subCategorias/${categoria}/${sub}/${p.id}/ventas`).transaction(ventas => ventas ? ventas + 1 : 1)
             }
-            await admin.database().ref(`vendidos/${region}/categorias/${categoria}/${p.id}`).update(vendidos)
-            await admin.database().ref(`vendidos/${region}/todos/${p.id}`).update(vendidos)
+            await admin.database().ref(`vendidos/${region}/categorias/${categoria}/${p.id}`).update(vendido)
+            await admin.database().ref(`vendidos/${region}/todos/${p.id}`).update(vendido)
             if (p.pasillo === 'Ofertas') {
                 await admin.database().ref(`ofertas/${region}/${categoria}/${p.id}/ventas`).transaction(ventas => ventas ? ventas + 1 : 1)
                 await admin.database().ref(`ofertas/${region}/todas/${p.id}/ventas`).transaction(ventas => ventas ? ventas + 1 : 1)
@@ -855,15 +860,46 @@ exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTempora
         }
     })
 
+exports.onNegocioDisplay = functions.database.ref('functions/{region}/{idNegocio}')
+    .onCreate(async (snapshot, context) => {
+        const region = context.params.region
+        const negocio: InfoFunction = snapshot.val()
+        for (const item of negocio.subCategoria) {
+            await admin.database().ref(`categoriaSub/${region}/${negocio.categoria}/${item}/cantidad`).transaction(cantidad => cantidad ? cantidad + 1 : 1)
+        }
+        return null
+    })
+
+exports.onProdCreated = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{pasillo}/{idProducto}')
+    .onCreate(async (snapshot, context) => {
+        const pasillo = context.params.pasillo
+        const categoria = context.params.categoria
+        const idNegocio = context.params.idNegocio
+        const region: string = await getRegion(idNegocio)
+        const subs: string[] = await getSubcategoria(idNegocio)
+        if (pasillo === 'Ofertas') {
+            for (const item of subs) {
+                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas + 1 : 1)
+            }
+        }
+        return null
+    })
+
 exports.onProdEliminadoOrPasilloChange = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{pasillo}/{idProducto}')
     .onDelete(async (snapshot, context) => {
         const idProducto = context.params.idProducto
         const idNegocio = context.params.idNegocio
         const categoria = context.params.categoria
+        const pasillo = context.params.pasillo
         const tipo = context.params.tipo
-        const producto = snapshot.val()
+        const producto: Producto = snapshot.val()
         const subCategorias = await getSubcategoria(idNegocio)
         const region = await getRegion(idNegocio)
+        if (pasillo === 'Ofertas') {
+            for (const item of subCategorias) {
+                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas -1 : 0)
+            }
+        }
         if (tipo === 'productos' && !producto.mudar) {    
             await admin.database().ref(`vendidos/${region}/todos/${producto.id}`).remove()
             await admin.database().ref(`vendidos/${region}/categorias/${categoria}/${producto.id}`).remove()
@@ -885,10 +921,26 @@ exports.onProdEliminadoOrPasilloChange = functions.database.ref('negocios/{tipo}
             if (tipo === 'productos') {            
                 return admin.database().ref(`vendidos/${region}/todos/${idProducto}`).once('value', async (snap) => {
                     if (snap.exists()) {
-                        await admin.database().ref(`vendidos/${region}/todos/${producto.id}`).update(producto)
-                        await admin.database().ref(`vendidos/${region}/categorias/${categoria}/${producto.id}`).update(producto)
+                        const p: MasVendido = snap.val()
+                        const vendido: MasVendido = {
+                            id: p.id,
+                            categoria,
+                            idNegocio,
+                            ventas: p.ventas,
+                            url: producto.url,
+                            nombre: producto.nombre,
+                            pasillo: producto.pasillo,
+                            nombreNegocio: p.nombreNegocio,
+                            descripcion: producto.descripcion,
+                            precio: producto.precio ? producto.precio : 1,
+                            agotado: producto.agotado ? producto.agotado : false,
+                            dosxuno: producto.dosxuno ? producto.dosxuno : false,
+                            descuento: producto.descuento ? producto.descuento : 0,
+                        }
+                        await admin.database().ref(`vendidos/${region}/todos/${producto.id}`).update(vendido)
+                        await admin.database().ref(`vendidos/${region}/categorias/${categoria}/${producto.id}`).update(vendido)
                         for (const item of subCategorias) {
-                            await admin.database().ref(`vendidos/${region}/subCategorias/${categoria}/${item}/${producto.id}`).update(producto)
+                            await admin.database().ref(`vendidos/${region}/subCategorias/${categoria}/${item}/${producto.id}`).update(vendido)
                         }
                         return null
                     }
@@ -898,10 +950,26 @@ exports.onProdEliminadoOrPasilloChange = functions.database.ref('negocios/{tipo}
             if (tipo === 'servicios') {            
                 return admin.database().ref(`vendidos-servicios/${region}/todos/${idProducto}`).once('value', async (snap) => {
                     if (snap.exists()) {
-                        await admin.database().ref(`vendidos-servicios/${region}/todos/${producto.id}`).update(producto)
-                        await admin.database().ref(`vendidos-servicios/${region}/categorias/${categoria}/${producto.id}`).update(producto)
+                        const p: MasVendido = snap.val()
+                        const consultado: MasVendido = {
+                            id: p.id,
+                            categoria,
+                            idNegocio,
+                            ventas: p.ventas,
+                            url: producto.url,
+                            nombre: producto.nombre,
+                            pasillo: producto.pasillo,
+                            nombreNegocio: p.nombreNegocio,
+                            descripcion: producto.descripcion,
+                            precio: producto.precio ? producto.precio : 1,
+                            agotado: producto.agotado ? producto.agotado : false,
+                            dosxuno: producto.dosxuno ? producto.dosxuno : false,
+                            descuento: producto.descuento ? producto.descuento : 0,
+                        }
+                        await admin.database().ref(`vendidos-servicios/${region}/todos/${producto.id}`).update(consultado)
+                        await admin.database().ref(`vendidos-servicios/${region}/categorias/${categoria}/${producto.id}`).update(consultado)
                         for (const item of subCategorias) {
-                            await admin.database().ref(`vendidos-servicios/${region}/subCategorias/${categoria}/${item}/${producto.id}`).update(producto)
+                            await admin.database().ref(`vendidos-servicios/${region}/subCategorias/${categoria}/${item}/${producto.id}`).update(consultado)
                         }
                         return null
                     }
@@ -913,24 +981,41 @@ exports.onProdEliminadoOrPasilloChange = functions.database.ref('negocios/{tipo}
         return null
     })
 
-exports.onProdEdit = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{subCategoria}/{idProducto}')
+exports.onProdEdit = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{pasillo}/{idProducto}')
     .onUpdate(async (change, context) => {
         const idProducto = context.params.idProducto
         const idNegocio = context.params.idNegocio
         const categoria = context.params.categoria
         const subCategorias = await getSubcategoria(idNegocio)
         const tipo = context.params.tipo
-        const after = change.after.val()
-        const before = change.before.val()
+        const after: Producto = change.after.val()
+        const before: Producto = change.before.val()
         if (before === after) return null
+        if (before.pasillo !== after.pasillo && after.mudar) return null
         const region = await getRegion(idNegocio)
         if (tipo === 'productos') {            
             return admin.database().ref(`vendidos/${region}/todos/${idProducto}`).once('value', async (snapshot) => {
                 if (snapshot.exists()) {
-                    await admin.database().ref(`vendidos/${region}/todos/${after.id}`).update(after)
-                    await admin.database().ref(`vendidos/${region}/categorias/${categoria}/${after.id}`).update(after)
+                    const p: MasVendido = snapshot.val()
+                    const vendido: MasVendido = {
+                        id: p.id,
+                        categoria,
+                        idNegocio,
+                        ventas: p.ventas,
+                        url: after.url,
+                        nombre: after.nombre,
+                        pasillo: after.pasillo,
+                        nombreNegocio: p.nombreNegocio,
+                        descripcion: after.descripcion,
+                        precio: after.precio ? after.precio : 1,
+                        agotado: after.agotado ? after.agotado : false,
+                        dosxuno: after.dosxuno ? after.dosxuno : false,
+                        descuento: after.descuento ? after.descuento : 0,
+                    }
+                    await admin.database().ref(`vendidos/${region}/todos/${after.id}`).update(vendido)
+                    await admin.database().ref(`vendidos/${region}/categorias/${categoria}/${after.id}`).update(vendido)
                     for (const item of subCategorias) {
-                        await admin.database().ref(`vendidos/${region}/subCategorias/${categoria}/${item}/${after.id}`).update(after)
+                        await admin.database().ref(`vendidos/${region}/subCategorias/${categoria}/${item}/${after.id}`).update(vendido)
                     }
                     return null
                 }
@@ -940,10 +1025,26 @@ exports.onProdEdit = functions.database.ref('negocios/{tipo}/{categoria}/{idNego
         if (tipo === 'servicios') {            
             return admin.database().ref(`vendidos-servicios/${region}/${idProducto}`).once('value', async (snapshot) => {
                 if (snapshot.exists()) {
-                    await admin.database().ref(`vendidos-servicios/${region}/todos/${after.id}`).update(after)
-                    await admin.database().ref(`vendidos-servicios/${region}/categorias/${categoria}/${after.id}`).update(after)
+                    const p: MasVendido = snapshot.val()
+                    const consultado: MasVendido = {
+                        id: p.id,
+                        categoria,
+                        idNegocio,
+                        url: after.url,
+                        ventas: p.ventas,
+                        nombre: after.nombre,
+                        pasillo: after.pasillo,
+                        nombreNegocio: p.nombreNegocio,
+                        descripcion: after.descripcion,
+                        precio: after.precio ? after.precio : 1,
+                        agotado: after.agotado ? after.agotado : false,
+                        dosxuno: after.dosxuno ? after.dosxuno : false,
+                        descuento: after.descuento ? after.descuento : 0,
+                    }
+                    await admin.database().ref(`vendidos-servicios/${region}/todos/${after.id}`).update(consultado)
+                    await admin.database().ref(`vendidos-servicios/${region}/categorias/${categoria}/${after.id}`).update(consultado)
                     for (const item of subCategorias) {
-                        await admin.database().ref(`vendidos-servicios/${region}/subCategorias/${categoria}/${item}/${after.id}`).update(after)
+                        await admin.database().ref(`vendidos-servicios/${region}/subCategorias/${categoria}/${item}/${after.id}`).update(consultado)
                     }
                     return null
                 }
@@ -956,14 +1057,14 @@ exports.onProdEdit = functions.database.ref('negocios/{tipo}/{categoria}/{idNego
 exports.onCategoriaEdit = functions.database.ref('perfiles/{idNegocio}/categoria')
     .onUpdate(async (change, context) => {
         const idNegocio = context.params.idNegocio
-        const after = change.after.val()
-        const before = change.before.val()
+        const after: string = change.after.val()
+        const before: string = change.before.val()
         const subCategorias = await getSubcategoria(idNegocio)
         if (before === after) return null
         const region = await getRegion(idNegocio)
         await admin.database().ref(`vendidos/${region}/todos`).orderByChild('idNegocio').equalTo(idNegocio).once('value', snapshot => {
             snapshot.forEach(child => {
-                const childData = child.val()
+                const childData: MasVendido = child.val()
                 const childKey = child.key
                 childData.categoria = after
                 admin.database().ref(`vendidos/${region}/todos/${childKey}`).update(childData)
@@ -978,7 +1079,7 @@ exports.onCategoriaEdit = functions.database.ref('perfiles/{idNegocio}/categoria
         })
         return admin.database().ref(`vendidos-servicios/${region}/todos`).orderByChild('idNegocio').equalTo(idNegocio).once('value', snapshot => {
             snapshot.forEach(child => {
-                const childData = child.val()
+                const childData: MasVendido = child.val()
                 const childKey = child.key
                 childData.categoria = after
                 admin.database().ref(`vendidos-servicios/${region}/todos/${childKey}`).update(childData)
@@ -1039,15 +1140,23 @@ exports.onSubCategoriaEdit = functions.database.ref('perfiles/{idNegocio}/subCat
         const after: string[] = change.after.val()
         const before: string[] = change.before.val()
         if (before === after) return null
-        const region = await getRegion(idNegocio)
+        const region: string = await getRegion(idNegocio)
+        const categoria: string = await getCategoria(idNegocio)
+            // Sumar y restar cantidad en SubCat
+        for (const item of before) {
+            await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/cantidad`).transaction(cantidad => cantidad ? cantidad - 1 : 0)
+        }        
+        for (const item of after) {
+            await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/cantidad`).transaction(cantidad => cantidad ? cantidad + 1 : 1)
+        }
+
+            // Mover vendidos
         await admin.database().ref(`vendidos/${region}/todos`).orderByChild('idNegocio').equalTo(idNegocio).once('value', snapshot => {
             snapshot.forEach(child => {
-                const childData = child.val()
-                const childKey = child.key
-                childData.nombreNegocio = after
+                const childData: MasVendido = child.val()
+                const childKey: string = child.key ? child.key : ''
                 admin.database().ref(`vendidos/${region}/todos/${childKey}`).update(childData)
-                .then(() => admin.database().ref(`vendidos/${region}/categorias/${childData.categoria}/${childData.id}`).update(childData))
-                .then(async () => {
+                .then(async() => {
                     for (const item of before) {
                         await admin.database().ref(`vendidos/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).remove()
                     }
@@ -1057,16 +1166,37 @@ exports.onSubCategoriaEdit = functions.database.ref('perfiles/{idNegocio}/subCat
                         await admin.database().ref(`vendidos/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).update(childData)
                     }
                 })
-                .catch(() => null)
+                .catch(err => console.log(err))
             })
         })
+
+            // Mover ofertas
+        await admin.database().ref(`ofertas/${region}/todas`).orderByChild('idNegocio').equalTo(idNegocio).once('value', snapshot => {
+            snapshot.forEach(child => {
+                const childData: Oferta = child.val()
+                admin.database().ref(`ofertas/${region}/todas/${childData.id}`).update(childData)
+                .then(async() => {
+                    for (const item of before) {
+                        await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas -1 : 0)
+                        await admin.database().ref(`ofertas/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).remove()
+                    }
+                })
+                .then(async() => {
+                    for (const item of after) {
+                        await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas + 1 : 1)
+                        await admin.database().ref(`ofertas/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).update(childData)
+                    }
+                })
+                .catch(err => console.log(err))
+            })
+        })
+
+            // Mover consultados
         return admin.database().ref(`vendidos-servicios/${region}/todos`).orderByChild('idNegocio').equalTo(idNegocio).once('value', snapshot => {
             snapshot.forEach(child => {
                 const childData = child.val()
-                const childKey = child.key
-                childData.nombreNegocio = after
+                const childKey: string = child.key ? child.key : ''
                 admin.database().ref(`vendidos-servicios/${region}/todos/${childKey}`).update(childData)
-                .then(() => admin.database().ref(`vendidos-servicios/${region}/categorias/${childData.categoria}/${childData.id}`).update(childData))
                 .then(async () => {
                     for (const item of before) {
                         await admin.database().ref(`vendidos-servicios/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).remove()
@@ -1081,6 +1211,12 @@ exports.onSubCategoriaEdit = functions.database.ref('perfiles/{idNegocio}/subCat
             })
         })
     })
+
+function getCategoria(idNegocio: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        return admin.database().ref(`perfiles/${idNegocio}/categoria`).once('value', snapshot => resolve(snapshot.val()))
+    })
+}
 
 exports.onNewRepartidor = functions.database.ref('nuevoColaborador/{idNegocio}/{idColaborador}')
     .onCreate(async (snapshot, context) => {
@@ -1387,7 +1523,7 @@ function sendFCMPedido(token: string, mensaje: string, pedido: Pedido) {
       return admin.messaging().sendToDevice(token, payload, options)
 }
 
-function getRegion(idNegocio: string) {
+function getRegion(idNegocio: string): Promise<string> {
     return new Promise((resolve, reject) => {
         admin.database().ref(`perfiles/${idNegocio}/region`).once('value')
         .then(region => resolve(region.val()))
@@ -1549,6 +1685,7 @@ export interface Cliente {
 }
 
 export interface Producto {
+    agotado?: boolean;
     codigo: string;
     descripcion: string;
     id: string;
@@ -1562,6 +1699,33 @@ export interface Producto {
     complementos?: ListaComplementosElegidos[];
     observaciones?: string;
     total: number;
+    descuento?: number;
+    dosxuno?: boolean;
+    mudar?: boolean;
+}
+
+export interface Oferta {
+    categoria: string;
+    foto: string;
+    id: string;
+    idNegocio: string;
+    abierto: boolean;
+}
+
+export interface MasVendido {
+    agotado: boolean;
+    categoria: string;
+    descripcion: string;
+    id: string;
+    idNegocio: string;
+    nombre: string;
+    nombreNegocio: string;
+    pasillo: string;
+    precio: number;
+    url: string;
+    ventas?: number;
+    descuento?: number;
+    dosxuno?: boolean;
 }
 
 export interface ListaComplementosElegidos {
