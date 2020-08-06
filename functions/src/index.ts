@@ -1,14 +1,14 @@
 import * as functions from 'firebase-functions'
 import * as admin from 'firebase-admin'
 
+admin.initializeApp()
+
 const cors = require('cors')({origin: true})
 const conekta = require('conekta')
-admin.initializeApp()
 
 conekta.api_key = 'key_J1cLBV6qz5G5PsGBKP8yKQ'
 conekta.api_version = '2.0.0'
 conekta.locale = 'es'
-
 
 // Pagos
 exports.request = functions.https.onRequest((request, response) => {
@@ -257,6 +257,7 @@ export interface Item {
     quantity: number;
 }
 
+
 // Lógica y desarrollo de pedidos
 exports.pedidoCreado = functions.database.ref('usuarios/{uid}/pedidos/activos/{idPedido}')
     .onCreate(async (snapshot, context) => {
@@ -453,6 +454,9 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
         const date = await formatDate(pedido.createdAt)
         let ganancia = pedido.envio + pedido.propina
         ganancia = pedido.banderazo ? ganancia + pedido.banderazo : ganancia
+        if (pedido.solicitudes && pedido.solicitudes > 3) return
+        let tokens: string[] = []
+        pedido.notificados = []
         // Get repartidores asociados
         return admin.database().ref(`pedidos/repartidor_pendiente/${idNegocio}/${idPedido}`).remove()
         .then(() => admin.database().ref(`repartidores_asociados_info/${pedido.region}/preview`).orderByChild('activo').equalTo(true).once('value'))
@@ -481,15 +485,16 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
                 if (!repartidor.last_notification) repartidor.last_notification = 0
                 if (!repartidor.last_pedido) repartidor.last_pedido = 0
                 if (!repartidor.pedidos_activos) repartidor.pedidos_activos = 0
-                repartidor.distancia = await calculaDistancia(repartidor.lat, repartidor.lng, pedido.negocio.direccion.lat, pedido.negocio.direccion.lng)
             }
-            repartidores.sort((a, b) => 
-                a.pedidos_activos - b.pedidos_activos ||
-                a.last_notification - b.last_notification ||
-                a.last_pedido - b.last_pedido ||
-                b.promedio - a.promedio ||
-                a.distancia - b.distancia)
+            repartidores.sort((a, b) => a.last_notification - b.last_notification)
             repartidorId = repartidores[0].id
+            if (pedido.solicitudes && pedido.solicitudes === 3) {
+                repartidores.forEach(r => {
+                    if (r.token) tokens.push(r.token)
+                    pedido.notificados.push(r.id)
+                })
+            }
+            else tokens = repartidores[0].token ? [repartidores[0].token] : []
             return null
         })
         .then(() => admin.database().ref(`pedidos/historial/${pedido.region}/por_fecha/${date}/${idPedido}`).once('value'))
@@ -503,9 +508,9 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
             }
             return null
         })
-        .then(() => sendFCMPedido(repartidores[0].token, 'Gana: $' + ganancia + ' MXN', pedido))
+        .then(() => tokens.length > 1 ? sendFCMPedido(tokens, 'Gana: $' + ganancia + ' MXN', pedido) : null)
         .then(() => pedido.last_notificado = repartidorId)
-        .then(() => {
+        .then(async () => {
             const ban = pedido.banderazo ? pedido.banderazo + pedido.envio : pedido.envio
             const notification = {
                 idPedido: pedido.id,
@@ -521,9 +526,13 @@ exports.solicitaRepartidor = functions.database.ref('pedidos/repartidor_pendient
                 cliente_lng: pedido.cliente.direccion.lng.toString(),
                 notificado: pedido.last_solicitud.toString(),
                 ganancia: ban.toString(),
-                propina: pedido.propina ? pedido.propina.toString() : '0'
+                propina: pedido.propina ? pedido.propina.toString() : '0',
+                solicitudes: pedido.solicitudes ? pedido.solicitudes.toString() : '1'
             }
-            return admin.database().ref(`notifications/${repartidorId}/${idPedido}`).set(notification)
+            if (pedido.solicitudes && pedido.solicitudes === 3) {
+                for (const not of pedido.notificados) await admin.database().ref(`notifications/${not}/${idPedido}`).set(notification)
+            } else await admin.database().ref(`notifications/${repartidorId}/${idPedido}`).set(notification)
+            return null
         })
         .then(() => admin.database().ref(`repartidores_asociados_info/${pedido.region}/preview/${repartidorId}/last_notification`).set(pedido.last_solicitud))
         .then(() => admin.database().ref(`pedidos/historial/${pedido.region}/por_fecha/${date}/${idPedido}`).update(pedido))
@@ -557,7 +566,6 @@ exports.pedidoTomadoRepartidor = functions.database.ref('pendientes_aceptacion/{
             })
             return admin.database().ref(`usuarios/${pedido.cliente.uid}/pedidos/activos/${pedido.id}/repartidor`).transaction(rep => {
                 if (rep) {
-                    console.log('Pedido tomado por otro repartidor')
                     throw sendFCM(repartidor.token, 'Plaza repartidores', 'El pedido ha sido tomado por otro repartidor')
                 } else return repartidor
             })
@@ -568,6 +576,12 @@ exports.pedidoTomadoRepartidor = functions.database.ref('pendientes_aceptacion/{
         .then(() => admin.database().ref(`pedidos/historial/${notificacion.region}/por_fecha/${date}/${idPedido}`).update(pedido))
         .then(() => admin.database().ref(`pedidos/activos/${pedido.negocio.idNegocio}/detalles/${idPedido}`).update(pedido))
         .then(() => admin.database().ref(`notifications/${pedido.last_notificado}/${idPedido}`).remove())
+        .then(async () => {
+            if (pedido.notificados && pedido.notificados.length > 0) {
+                for (const not of pedido.notificados) await admin.database().ref(`notifications/${not}/${idPedido}`).remove()
+            }
+            return null
+        })
         .then(() => admin.database().ref(`pendientes_aceptacion/${idRepartidor}/${idPedido}`).remove())
         .then(() => admin.database().ref(`pedidos/activos/${pedido.negocio.idNegocio}/repartidor_pendiente/${idPedido}`).remove())
         })
@@ -882,7 +896,6 @@ exports.onProdCreated = functions.database.ref('negocios/{tipo}/{categoria}/{idN
                 await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas + 1 : 1)
             }
         }
-        return null
     })
 
 exports.onProdEliminadoOrPasilloChange = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{pasillo}/{idProducto}')
@@ -1344,26 +1357,6 @@ exports.checkIsOpen = functions.pubsub.schedule('every 15 minutes').onRun(async 
 
 // Functions
 
-function calculaDistancia( lat1: number, lng1: number, lat2: number, lng2: number ): Promise<number> {
-    return new Promise ((resolve, reject) => {
-        const R = 6371; // Radius of the earth in km
-        const dLat = deg2rad(lat2 - lat1);
-        const dLon = deg2rad(lng2 - lng1);
-        const a =
-            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
-            Math.sin(dLon / 2) * Math.sin(dLon / 2)
-            ;
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        const mts = R * c * 1000; // Distance in mts
-        resolve(mts);
-    });
-}
-
-function deg2rad( deg: number ) {
-    return deg * (Math.PI / 180);
-}
-
 async function cierraNegocio(idNegocio: string, dia: string) {
     let categoria = ''
     let subCategoria: any = []
@@ -1491,7 +1484,7 @@ function sendFCM(token: string, title: string, mensaje: string) {
       return admin.messaging().sendToDevice(token, payload, options)
 }
 
-function sendFCMPedido(token: string, mensaje: string, pedido: Pedido) {
+function sendFCMPedido(token: string[], mensaje: string, pedido: Pedido) {
     const ban = pedido.banderazo ? pedido.banderazo + pedido.envio : pedido.envio
     const payload: admin.messaging.MessagingPayload = {
         notification: {
@@ -1514,7 +1507,8 @@ function sendFCMPedido(token: string, mensaje: string, pedido: Pedido) {
             createdAt: pedido.createdAt.toString(),
             notificado: pedido.last_solicitud.toString(),
             ganancia: ban.toString(),
-            propina: pedido.propina ? pedido.propina.toString() : '0'
+            propina: pedido.propina ? pedido.propina.toString() : '0',
+            solicitudes: pedido.solicitudes ? pedido.solicitudes.toString() : '1'
         }
       };
       const options = {
@@ -1603,6 +1597,7 @@ export interface Pedido {
     last_notification: number;
     last_notificado: string;
     last_solicitud: number;
+    notificados: string[];
     repartidor?: Repartidor;
     cancelado_by_user?: number;
     cancelado_by_negocio?: number;
@@ -1613,6 +1608,7 @@ export interface Pedido {
     recolectado?: boolean;
     banderazo?: number;
     repartidor_llego: boolean;
+    solicitudes?: number;
 }
 
 export interface InfoFunction {
@@ -1702,6 +1698,7 @@ export interface Producto {
     descuento?: number;
     dosxuno?: boolean;
     mudar?: boolean;
+    nuevo: boolean;
 }
 
 export interface Oferta {
@@ -1732,6 +1729,7 @@ export interface ListaComplementosElegidos {
     titulo: string;
     complementos: Complemento[];
 }
+
 export interface Complemento {
     nombre: string;
     precio: number;
