@@ -6,7 +6,7 @@ admin.initializeApp()
 const cors = require('cors')({origin: true})
 const conekta = require('conekta')
 
-conekta.api_key = 'key_J1cLBV6qz5G5PsGBKP8yKQ'
+conekta.api_key = functions.config().conekta.key
 conekta.api_version = '2.0.0'
 conekta.locale = 'es'
 
