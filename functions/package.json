@@ -15,7 +15,7 @@
     "main": "lib/index.js",
     "dependencies": {
         "cors": "^2.8.5",
-        "conekta": "^4.0.1",
+        "stripe": "^8.84.0",
         "algoliasearch": "^4.4.0",
         "firebase-admin": "~7.0.0",
         "firebase-functions": "^2.3.0"

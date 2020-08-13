@@ -3,17 +3,22 @@ import * as admin from 'firebase-admin'
 
 admin.initializeApp()
 
+const stripe = require('stripe')(functions.config().stripe.key)
 const cors = require('cors')({origin: true})
-const conekta = require('conekta')
-
-conekta.api_key = functions.config().conekta.key
-conekta.api_version = '2.0.0'
-conekta.locale = 'es'
 
 const algoliasearch = require('algoliasearch')
 const client = algoliasearch(functions.config().algolia.app_id, functions.config().algolia.api_key)
 
 // Pagos
+
+exports.onUserCreated = functions.database.ref('usuarios/{userId}')
+    .onCreate(async (snapshot, context) => {
+        const userId = context.params.userId
+        const user = await admin.auth().getUser(userId)
+        const customer = await stripe.customers.create({ email: user.email})
+        return admin.database().ref(`usuarios/${userId}/forma-pago/customer_id`).set(customer.id)
+    })
+
 exports.request = functions.https.onRequest((request, response) => {
     cors(request, response, () => {
         response.set('Access-Control-Allow-Origin', '*');
@@ -22,234 +27,77 @@ exports.request = functions.https.onRequest((request, response) => {
         const data = request.body.data
         if (origen === 'newCard') {
             return newCard(data)
-            .then(() => response.status(200).send('Bien hecho esponja'))
-            .catch(err => response.status(400).send('No pudimos completar el registro ' + err))
+            .then(res => response.status(200).send(res))
+            .catch(err => response.status(400).send(err))
         } else {
-            return doCharge(data)
+            return cobra(data)
             .then((idOrder: string) => response.status(200).send(idOrder))
-            .catch((err: any) => response.status(400).send('No pudimos hacer el cargo ' + err))
+            .catch((err: any) => response.status(400).send(err))
         }
-
-    });
+    })
 })
 
-function newCard(cliente: ClienteToken) {
+function newCard(cliente: string): Promise<string> {
     return new Promise((resolve, reject) => {        
-        let formaPago: any
-        return admin.database().ref(`usuarios/${cliente.idCliente}/forma-pago/idConekta`).once('value')
-        .then(res => res.val())
-        .then(idConekta => {
-            if (!idConekta) return createUser(cliente)
-            return addCard(idConekta, cliente.token)
+        return admin.database().ref(`usuarios/${cliente}/forma-pago/customer_id`).once('value')
+        .then(snap => snap.val())
+        .then(async (customer) => {
+            const intent = await stripe.paymentIntents.create({
+                amount: 10 * 100,
+                currency: 'mxn',
+                customer,
+            })
+            resolve(intent.client_secret)
+            return null
         })
-        .then((customer: any) => formaPago = customer)
-        .then(() => doPreCharge(cliente.idCliente, formaPago.idCard))
-        .then(() => admin.database().ref(`usuarios/${cliente.idCliente}/forma-pago/idConekta`).set(formaPago.idConekta))
-        .then(() => admin.database().ref(`usuarios/${cliente.idCliente}/forma-pago/nueva`).set(formaPago.idCard))
-        .then(() => resolve())
         .catch(err => reject(err))
     })
 }
 
-function createUser(cliente: ClienteToken) {
-    return new Promise(async (resolve, reject) => {
-        try {
-            const clienteInfo = await admin.auth().getUser(cliente.idCliente)
-            if (clienteInfo.phoneNumber) {
-                conekta.Customer.create({
-                    'name': cliente.name,
-                    'email': clienteInfo.email,
-                    'phone': clienteInfo.phoneNumber,
-                    'payment_sources': [{
-                    'type': 'card',
-                    'token_id': cliente.token
-                    }]
-                })
-                .then((customer: any) => {
-                    console.log(customer.toObject());
-                    const newCliente = {
-                        idCard: customer.toObject().default_payment_source_id,
-                        idConekta: customer.toObject().id
-                    }
-                    console.log(newCliente);
-                    resolve(newCliente)
-                })
-                .catch((err: any) => {
-                    console.log(err)
-                    reject(err)
-                })
-            } else {
-                conekta.Customer.create({
-                    'name': cliente.name,
-                    'email': clienteInfo.email,
-                    'payment_sources': [{
-                        'type': 'card',
-                        'token_id': cliente.token
-                    }]
-                })
-                .then((customer: any) => {
-                    console.log(customer.toObject());
-                    const newCliente = {
-                        idCard: customer.toObject().default_payment_source_id,
-                        idConekta: customer.toObject().id
-                    }
-                    console.log(newCliente);
-                    resolve(newCliente)
-                })
-                .catch((err: any) => {
-                    console.log(err)
-                    reject(err)
-                })
+exports.onNewCard = functions.database.ref('usuarios/{uid}/forma-pago/historial/{idMethod}')
+    .onCreate(async (snapshot, context) => {
+        const uid = context.params.uid
+        const idMethod = context.params.idMethod
+        const pm = await stripe.paymentMethods.retrieve(idMethod)
+        console.log(pm);
+        const card = {
+            forma: pm.card.last4,
+            id: idMethod,
+            tipo: pm.card.brand
+        }
+        return admin.database().ref(`usuarios/${uid}/forma-pago/historial/${idMethod}`).update(card)
+    })
 
+function cobra(pedido: Pedido): Promise<string> {
+    return new Promise(async (resolve, reject) => {        
+        try {
+            const cusSub = await admin.database().ref(`usuarios/${pedido.cliente.uid}/forma-pago/customer_id`).once('value')
+            const customer = cusSub.val()
+            const paymentIntent = await stripe.paymentIntents.create({
+              amount:  Math.round(pedido.total * 100),
+              currency: 'mxn',
+              customer,
+              payment_method: pedido.formaPago.id,
+              off_session: true,
+              confirm: true,
+            })
+            resolve(paymentIntent.id)
+        } catch (err) {
+            // Error code will be authentication_required if authentication is needed
+            console.log(err);
+            console.log('Error code is: ', err.code)
+            const paymentIntentRetrieved = await stripe.paymentIntents.retrieve(err.raw.payment_intent.id)
+            const secret = paymentIntentRetrieved.client_secret
+            const idMethod = paymentIntentRetrieved.last_payment_error.payment_method.id
+            console.log('Secret ' + secret);
+            console.log('idMethod ' + idMethod);
+            console.log('PI retrieved: ', paymentIntentRetrieved.id)
+            const error = {
+                secret,
+                idMethod,
             }
-        } catch (error) {
-            console.log(error);
             reject(error)
         }
-    });
-}
-
-function addCard(idConekta: string, token: string) {
-    return new Promise((resolve, reject) => {
-        conekta.Customer.find(idConekta, function(_err: any, _customer: any) {
-            _customer.createPaymentSource({
-                type: 'card',
-                token_id: token
-            }, function(erre: any, res: any) {
-                const newCliente = {
-                    idCard: res.id,
-                    idConekta: idConekta
-                }
-                resolve(newCliente)
-            })
-        })
-    });
-}
-
-function doPreCharge(uid: string, pagoId: string): Promise<boolean> {
-    return new Promise((resolve, reject) => {
-        let idConekta: string
-        return admin.database().ref(`usuarios/${uid}/forma-pago/idConekta`).once('value')
-        .then((snp) => snp.val())
-        .then(idCon => idConekta = idCon)
-        .then(() => conekta.Customer.find(idConekta))
-        .then(cliente => {
-            cliente.update({
-                default_payment_source_id: pagoId
-            },
-            function (err: any, customer: any){
-                if (err) reject(err)                           
-                const item: Item[] = [{
-                    id: 'cargo_seguridad',
-                    name: 'Cargo seguridad',
-                    unit_price: 10 * 100,
-                    quantity: 1
-                }]
-                conekta.Order.create({
-                    currency: 'MXN',
-                    customer_info: {
-                        customer_id: idConekta
-                    },
-                    line_items: item,
-                    charges: [{
-                        payment_method: {
-                            type: 'default'
-                          } 
-                    }]
-                })
-                .then(async (result: any) => resolve(result.toObject().id))
-                .catch((erra: any) => reject(erra.details[0].message))
-            })
-        })
-    })
-}
-
-function doCharge(pedido: Pedido): Promise<string> {
-    const items: Item[] = []
-    let idConekta: string
-    return new Promise((resolve, reject) => {        
-        return admin.database().ref(`usuarios/${pedido.cliente.uid}/forma-pago/idConekta`).once('value')
-        .then((snp) => snp.val())
-        .then(idCon => idConekta = idCon)
-        .then(() => conekta.Customer.find(idConekta))
-        .then(cliente => {
-            cliente.update({
-                default_payment_source_id: pedido.formaPago.id
-            },
-            function (err: any, customer: any){
-                if (err) reject(err)
-                for (const producto of pedido.productos) {
-                    producto.total = Math.round((producto.total + Number.EPSILON) * 100) / 100
-                    const item: Item = {
-                        id: producto.id,
-                        name: producto.nombre,
-                        unit_price: Math.round(producto.total * 100),
-                        quantity: 1
-                    }
-                    items.push(item)
-                }
-                if (pedido.envio) {
-                    const item: Item = {
-                        id: 'envio',
-                        name: 'Envio',
-                        unit_price: Math.round(pedido.envio * 100),
-                        quantity: 1
-                    }
-                    items.push(item)
-                }                
-                if (pedido.propina) {
-                    const item: Item = {
-                        id: 'propina',
-                        name: 'Propina',
-                        unit_price: Math.round(pedido.propina * 100),
-                        quantity: 1
-                    }
-                    items.push(item)
-                }                
-                if (pedido.comision) {
-                    const item: Item = {
-                        id: 'comision',
-                        name: 'Comision',
-                        unit_price: Math.round(pedido.comision * 100),
-                        quantity: 1
-                    }
-                    items.push(item)
-                }
-                conekta.Order.create({
-                    currency: 'MXN',
-                    customer_info: {
-                        customer_id: idConekta
-                    },
-                    line_items: items,
-                    charges: [{
-                        payment_method: {
-                            type: 'default'
-                          } 
-                    }]
-                })
-                .then(async (result: any) => resolve(result.toObject().id))
-                .catch((erra: any) => {
-                    console.log('Error');
-                    console.log(erra);
-                    reject(erra.details[0].message)
-                })
-            })
-        })
-    });
-}
-
-function doRefund(pedido: Pedido): Promise<boolean> {
-    return new Promise((resolve, reject) => {
-        
-        conekta.Order.find(pedido.idOrder, function (err: any, order: any) {
-            order.createRefund({
-                reason: 'other',
-            }, function (erre: any, res: any) {
-                if (erre) reject()
-                else resolve()
-            }
-            )
-        })
     })
 }
 
@@ -361,7 +209,7 @@ exports.pedidoAceptadoOrRepartidorAsignado = functions.database.ref('pedidos/act
         }
 
         if (before.cancelado_by_negocio !== after.cancelado_by_negocio && after.cancelado_by_negocio) {
-            if (after.idOrder) await doRefund(after)
+            // if (after.idOrder) await doRefund(after)
             await admin.database().ref(`pedidos/historial/${after.region}/por_negocio/${after.negocio.idNegocio}/${date}/${idPedido}`).set(after)
             await admin.database().ref(`pedidos/historial/${after.region}/por_fecha/${date}/${idPedido}`).update(after)
             await admin.database().ref(`pedidos/activos/${after.negocio.idNegocio}/cantidad`).transaction(cantidad => cantidad ? cantidad - 1 : 0)
@@ -803,44 +651,49 @@ function calificaNegocio(data: ResumenNegocioCalificaciones, calificacion: Calif
     return data
 }
 
-
 /////////////////// Búsqueda
 
 exports.busqueda = functions.database.ref('busqueda/{region}/{idBusqueda}')
     .onCreate(async (snapshot, context) => {
+        const query = snapshot.val()
         const region = context.params.region
         const idBusqueda = context.params.idBusqueda
-        const query = snapshot.val().texto
         const queries = [
             {
                 indexName: `productos_${region}`,
-                query,
+                query: query.texto,
+                params: {
+                    page: query.pagina,                 
+                }
+            },              
+            {
+                indexName: `servicios_${region}`,
+                query: query.texto,
+                params: {
+                    page: query.pagina,                 
+                }
             },            
             {
                 indexName: `negocios_${region}`,
-                query,
+                query: query.texto,
+                params: {
+                    page: query.pagina,               
+                }
             },
         ]
         return client.multipleQueries(queries)
-        .then(async (results: any) => {
-            console.log(results);
-            const productos = {
-                productos: results[0].hits ? results[0].hits : [],
-                cantidad: results[0].nbHits
-            }            
-            const negocios = {
-                negocios: results[1].hits ? results[1].hits : [],
-                cantidad: results[1].nbHits
-            }
-            await admin.database().ref(`busqueda_resultados/${region}/${idBusqueda}/productos`).set(productos)
-            await admin.database().ref(`busqueda_resultados/${region}/${idBusqueda}/negocios`).set(negocios)
+        .then(async (res: any) => {
+            const hitsProds = res.results[0].nbHits > 0 ? res.results[0].hits : 'no_results'
+            const hitsServs = res.results[1].nbHits > 0 ? res.results[1].hits : 'no_results'
+            const hitsNeg = res.results[2].nbHits > 0 ? res.results[2].hits : 'no_results' 
+            await admin.database().ref(`busqueda_resultados/${region}/${idBusqueda}/productos/${query.pagina}`).set(hitsProds)
+            await admin.database().ref(`busqueda_resultados/${region}/${idBusqueda}/servicios/${query.pagina}`).set(hitsServs)
+            await admin.database().ref(`busqueda_resultados/${region}/${idBusqueda}/negocios/${query.pagina}`).set(hitsNeg)
             return admin.database().ref(`busqueda/${region}/${idBusqueda}`).remove()
         })
         .catch((err: any) => console.log(err))
 
     })
-
-
 
 //////////////////// Propios de administración, registros
 
@@ -887,9 +740,17 @@ exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTempora
                 // Info datos-pedido & preparacion if tipo productos
             if (negocio.tipo === 'productos') {
             const datosPedido = {
-              entrega: negocio.entrega,
-              telefono: negocio.telefono,
-              formas_pago: negocio.formas_pago
+                envio: negocio.envio ? negocio.envio : 0,
+                idNegocio: negocio.id,
+                direccion: negocio.direccion,
+                nombreNegocio: negocio.nombre,
+                logo: negocio.logo,
+                entrega: negocio.entrega,
+                telefono: negocio.telefono,
+                formas_pago: negocio.formas_pago,
+                envio_gratis_pedMin: negocio.envio_gratis_pedMin ? negocio.envio_desp_pedMin : 0,
+                repartidores_propios: negocio.repartidores_propios,
+                envio_costo_fijo: negocio.envio_costo_fijo ? negocio.envio_costo_fijo : false
             }
             await admin.database().ref(`negocios/datos-pedido/${negocio.categoria}/${negocio.id}`).update(datosPedido)
             }
@@ -926,12 +787,14 @@ exports.onNegocioDisplay = functions.database.ref('functions/{region}/{idNegocio
 
 exports.onProdCreated = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{pasillo}/{idProducto}')
     .onCreate(async (snapshot, context) => {
+        const tipo = context.params.tipo
         const pasillo = context.params.pasillo
         const producto: Producto = snapshot.val()
         const categoria = context.params.categoria
         const idNegocio = context.params.idNegocio
         const region: string = await getRegion(idNegocio)
         const subs: string[] = await getSubcategoria(idNegocio)
+        const nombreNegocio: string = await getNombreNegocio(idNegocio)
         if (pasillo === 'Ofertas') {
             for (const item of subs) {
                 await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas + 1 : 1)
@@ -939,15 +802,19 @@ exports.onProdCreated = functions.database.ref('negocios/{tipo}/{categoria}/{idN
         }
 
         //Guarda (o actualiza si cambia de pasillo) en Algolia
-        const index = client.initIndex('productos_' + region)
+        const index = client.initIndex(tipo + '_' + region)
         const prodAlgolia: ProductoAlgolia = {
+            agotado: producto.agotado ? producto.agotado : false,
             descripcion: producto.descripcion,
             nombre: producto.nombre,
             objectID: producto.id,
             precio: producto.precio,
+            idNegocio,
             url: producto.url,
             descuento: producto.descuento ? producto.descuento : 0,
             dosxuno: producto.dosxuno ? producto.dosxuno : false,
+            categoria,
+            nombreNegocio
         }
         return index.saveObject(prodAlgolia)
     })
@@ -973,7 +840,6 @@ exports.onProdEliminadoOrPasilloChange = functions.database.ref('negocios/{tipo}
             for (const item of subCategorias) {
                 await admin.database().ref(`vendidos/${region}/subCategorias/${categoria}/${item}/${producto.id}`).remove()
             }
-            return null
         }
         if (tipo === 'servicios' && !producto.mudar) {            
             await admin.database().ref(`vendidos-servicios/${region}/todos/${producto.id}`).remove()
@@ -981,7 +847,6 @@ exports.onProdEliminadoOrPasilloChange = functions.database.ref('negocios/{tipo}
             for (const item of subCategorias) {
                 await admin.database().ref(`vendidos-servicios/${region}/subCategorias/${categoria}/${item}/${producto.id}`).remove()
             }
-            return null
         }
         if (producto.mudar) {
             delete producto.mudar
@@ -1045,7 +910,7 @@ exports.onProdEliminadoOrPasilloChange = functions.database.ref('negocios/{tipo}
             }
             return null
         } else {
-            const index = client.initIndex('productos_' + region)
+            const index = client.initIndex(tipo + '_' + region)
             return index.deleteObject(producto.id)
         }
     })
@@ -1121,18 +986,26 @@ exports.onProdEdit = functions.database.ref('negocios/{tipo}/{categoria}/{idNego
             })
         }
 
-        const index = client.initIndex('productos_' + region)
+        const index = client.initIndex(tipo + '_' + region)
         //Guarda (o actualiza si cambia de pasillo) en Algolia
         const prodAlgolia: ProductoAlgolia = {
+            agotado: after.agotado ? after.agotado : false,
             descripcion: after.descripcion,
             nombre: after.nombre,
             objectID: after.id,
             precio: after.precio,
             url: after.url,
+            idNegocio,
             descuento: after.descuento ? after.descuento : 0,
             dosxuno: after.dosxuno ? after.dosxuno : false,
+            categoria,
+            nombreNegocio: '',
         }
+        delete prodAlgolia.categoria
+        delete prodAlgolia.idNegocio
+        delete prodAlgolia.nombreNegocio
         if (before.descripcion === after.descripcion) delete prodAlgolia.descripcion
+        if (before.agotado === after.agotado) delete prodAlgolia.agotado
         if (before.nombre === after.nombre) delete prodAlgolia.nombre
         if (before.precio === after.precio) delete prodAlgolia.precio
         if (before.url === after.url) delete prodAlgolia.url
@@ -1241,7 +1114,23 @@ exports.negocioEdit = functions.database.ref('perfiles/{idNegocio}')
 
 function getCategoria(idNegocio: string): Promise<string> {
     return new Promise((resolve, reject) => {
-        return admin.database().ref(`perfiles/${idNegocio}/categoria`).once('value', snapshot => resolve(snapshot.val()))
+        admin.database().ref(`perfiles/${idNegocio}/categoria`).once('value')
+        .then(region => resolve(region.val()))
+        .catch(err => {
+            console.log(err)
+            reject(err)
+        })
+    })
+}
+
+function getNombreNegocio(idNegocio: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        admin.database().ref(`perfiles/${idNegocio}/nombre`).once('value')
+        .then(region => resolve(region.val()))
+        .catch(err => {
+            console.log(err)
+            reject(err)
+        })
     })
 }
 
@@ -1451,7 +1340,6 @@ exports.onNombreNegocioEdit = functions.database.ref('perfiles/{idNegocio}/nombr
         })
     })
 
-
 // Functions
 
 async function cierraNegocio(idNegocio: string, dia: string) {
@@ -1485,6 +1373,14 @@ async function cierraNegocio(idNegocio: string, dia: string) {
                     .then(() => admin.database().ref(`horario/analisis/${dia}/${idNegocio}`).update({abierto: false}))
                     .then(() => admin.database().ref(`functions/${region}/${idNegocio}`).update({abierto: false}))
                     .then(() => admin.database().ref(`isOpen/${region}/${idNegocio}/abierto`).set(false))
+                    .then(() => {
+                        const negocioAlgolia = {
+                            abierto: false,
+                            objectID: idNegocio,
+                        }
+                        const index = client.initIndex('negocios_' + region)
+                        return index.partialUpdateObject(negocioAlgolia)
+                    })
                     .catch(err => console.log(err))
 }
 
@@ -1520,7 +1416,15 @@ async function abreNegocio(idNegocio: string, dia: string) {
                     .then(() =>admin.database().ref(`horario/analisis/${dia}/${idNegocio}`).update({abierto: true}))
                     .then(() => admin.database().ref(`functions/${region}/${idNegocio}`).update({abierto: true}))
                     .then(() => admin.database().ref(`isOpen/${region}/${idNegocio}/abierto`).set(true))
-                    .catch(err => console.log(err));
+                    .then(() => {
+                        const negocioAlgolia = {
+                            abierto: true,
+                            objectID: idNegocio,
+                        }
+                        const index = client.initIndex('negocios_' + region)
+                        return index.partialUpdateObject(negocioAlgolia)
+                    })
+                    .catch(err => console.log(err))
 }
 
 function sendPushNotification(token: string, msn: string) {
@@ -1685,13 +1589,17 @@ export interface NegocioAlgolia {
 }
 
 export interface ProductoAlgolia {
+    agotado: boolean;
     url: string;
     precio: number;
     nombre: string;
     objectID: string;
     descripcion: string;
-    descuento?: number;
-    dosxuno?: boolean;
+    descuento: number;
+    dosxuno: boolean;
+    idNegocio: string;
+    categoria: string;
+    nombreNegocio: string;
 }
 
 export interface Pedido {
