@@ -59,7 +59,6 @@ exports.onNewCard = functions.database.ref('usuarios/{uid}/forma-pago/historial/
         const uid = context.params.uid
         const idMethod = context.params.idMethod
         const pm = await stripe.paymentMethods.retrieve(idMethod)
-        console.log(pm);
         const card = {
             forma: pm.card.last4,
             id: idMethod,
@@ -758,18 +757,7 @@ exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTempora
                 await admin.database().ref(`preparacion//${negocio.id}`).set(negocio.preparacion)
             }
                 //Listoforo
-            await admin.database().ref(`result_negocios/${region}/${idTemporal}`).push('ok')
-            const index = client.initIndex('negocios_' + negocio.region)
-            const negocioAlgolia: NegocioAlgolia = {
-                abierto: false,
-                categoria: negocio.categoria,
-                logo: negocio.logo,
-                nombre: negocio.nombre,
-                objectID: negocio.id,
-                productos: 0,
-                subCategoria: negocio.subCategoria
-            }
-            return index.saveObject(negocioAlgolia)
+            return admin.database().ref(`result_negocios/${region}/${idTemporal}`).push('ok')
         } catch (error) {
             return admin.database().ref(`result_negocios/${region}/${idTemporal}`).push(error.errorInfo.code)
         }
@@ -779,10 +767,28 @@ exports.onNegocioDisplay = functions.database.ref('functions/{region}/{idNegocio
     .onCreate(async (snapshot, context) => {
         const region = context.params.region
         const negocio: InfoFunction = snapshot.val()
-        for (const item of negocio.subCategoria) {
-            await admin.database().ref(`categoriaSub/${region}/${negocio.categoria}/${item}/cantidad`).transaction(cantidad => cantidad ? cantidad + 1 : 1)
+        const index = client.initIndex('negocios_' + region)
+        const negocioAlgolia: NegocioAlgolia = {
+            abierto: false,
+            categoria: negocio.categoria,
+            logo: negocio.foto,
+            nombre: negocio.nombre,
+            objectID: negocio.idNegocio,
+            productos: 0,
+            subCategoria: negocio.subCategoria
         }
-        return null
+        await index.saveObject(negocioAlgolia)
+        return admin.database().ref(`categoria/${region}/${negocio.categoria}/cantidad`).transaction(cantidad => cantidad ? cantidad + 1 : 1)
+
+    })
+
+exports.onNegocioRemoveDisplay = functions.database.ref('functions/{region}/{idNegocio}')
+    .onDelete(async (snapshot, context) => {
+        const region = context.params.region
+        const negocio: InfoFunction = snapshot.val()
+        const index = client.initIndex('negocios_' + region)
+        await index.deleteObject(negocio.idNegocio)
+        return admin.database().ref(`categoria/${region}/${negocio.categoria}/cantidad`).transaction(cantidad => cantidad ? cantidad - 1 : 0)
     })
 
 exports.onProdCreated = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{pasillo}/{idProducto}')
