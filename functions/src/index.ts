@@ -794,6 +794,7 @@ exports.onNegocioRemoveDisplay = functions.database.ref('functions/{region}/{idN
 exports.onProdCreated = functions.database.ref('negocios/{tipo}/{categoria}/{idNegocio}/{pasillo}/{idProducto}')
     .onCreate(async (snapshot, context) => {
         const tipo = context.params.tipo
+        if (tipo !== 'productos' && tipo !== 'servicios') return
         const pasillo = context.params.pasillo
         const producto: Producto = snapshot.val()
         const categoria = context.params.categoria
@@ -801,10 +802,9 @@ exports.onProdCreated = functions.database.ref('negocios/{tipo}/{categoria}/{idN
         const region: string = await getRegion(idNegocio)
         const subs: string[] = await getSubcategoria(idNegocio)
         const nombreNegocio: string = await getNombreNegocio(idNegocio)
-        if (pasillo === 'Ofertas') {
-            for (const item of subs) {
-                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas + 1 : 1)
-            }
+        for (const item of subs) {
+            await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/cantidad`).transaction(cantidad => cantidad ? cantidad + 1 : 1)
+            if (pasillo === 'Ofertas') await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas + 1 : 1)
         }
 
         //Guarda (o actualiza si cambia de pasillo) en Algolia
@@ -832,13 +832,13 @@ exports.onProdEliminadoOrPasilloChange = functions.database.ref('negocios/{tipo}
         const categoria = context.params.categoria
         const pasillo = context.params.pasillo
         const tipo = context.params.tipo
+        if (tipo !== 'productos' && tipo !== 'servicios') return
         const region = await getRegion(idNegocio)
         const producto: Producto = snapshot.val()
         const subCategorias = await getSubcategoria(idNegocio)
-        if (pasillo === 'Ofertas') {
-            for (const item of subCategorias) {
-                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas -1 : 0)
-            }
+        for (const item of subCategorias) {
+            await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/cantidad`).transaction(cantidad => cantidad ? cantidad - 1 : 0)
+            if (pasillo === 'Ofertas') await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas - 1 : 0)
         }
         if (tipo === 'productos' && !producto.mudar) {    
             await admin.database().ref(`vendidos/${region}/todos/${producto.id}`).remove()
@@ -926,8 +926,9 @@ exports.onProdEdit = functions.database.ref('negocios/{tipo}/{categoria}/{idNego
         const idProducto = context.params.idProducto
         const idNegocio = context.params.idNegocio
         const categoria = context.params.categoria
-        const subCategorias = await getSubcategoria(idNegocio)
         const tipo = context.params.tipo
+        if (tipo !== 'productos' && tipo !== 'servicios') return
+        const subCategorias = await getSubcategoria(idNegocio)
         const after: Producto = change.after.val()
         const before: Producto = change.before.val()
         if (before === after) return null
@@ -1028,14 +1029,20 @@ exports.negocioEdit = functions.database.ref('perfiles/{idNegocio}')
         if (before === after) return null
         const region: string = await getRegion(idNegocio)
         const categoria: string = await getCategoria(idNegocio)
+        let prodsQty: number = await getProdsQty(idNegocio)
+        if (!prodsQty) prodsQty = 0
+        let ofertasQty: number = await getOfertasQty(idNegocio)
+        if (!ofertasQty) ofertasQty = 0
             // Sumar y restar cantidad en SubCat
         
         if (JSON.stringify(before.subCategoria) !== JSON.stringify(after.subCategoria)) {
             for (const item of before.subCategoria) {
-                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/cantidad`).transaction(cantidad => cantidad ? cantidad - 1 : 0)
+                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/cantidad`).transaction(cantidad => cantidad >= prodsQty ? cantidad - prodsQty : 0)
+                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(cantidad => cantidad >= ofertasQty ? cantidad - ofertasQty : 0)
             }        
             for (const item of after.subCategoria) {
-                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/cantidad`).transaction(cantidad => cantidad ? cantidad + 1 : 1)
+                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/cantidad`).transaction(cantidad => cantidad ? cantidad + prodsQty : prodsQty)
+                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(cantidad => cantidad ? cantidad + ofertasQty : ofertasQty)
             }
     
                 // Mover vendidos
@@ -1065,13 +1072,11 @@ exports.negocioEdit = functions.database.ref('perfiles/{idNegocio}')
                     admin.database().ref(`ofertas/${region}/todas/${childData.id}`).update(childData)
                     .then(async() => {
                         for (const item of before.subCategoria) {
-                            await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas -1 : 0)
                             await admin.database().ref(`ofertas/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).remove()
                         }
                     })
                     .then(async() => {
                         for (const item of after.subCategoria) {
-                            await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(ofertas => ofertas ? ofertas + 1 : 1)
                             await admin.database().ref(`ofertas/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).update(childData)
                         }
                     })
@@ -1139,6 +1144,29 @@ function getNombreNegocio(idNegocio: string): Promise<string> {
         })
     })
 }
+
+function getProdsQty(idNegocio: string): Promise<number> {
+    return new Promise((resolve, reject) => {
+        admin.database().ref(`perfiles/${idNegocio}/productos`).once('value')
+        .then(prods => resolve(prods.val()))
+        .catch(err => {
+            console.log(err)
+            reject(err)
+        })
+    })
+}
+
+function getOfertasQty(idNegocio: string): Promise<number> {
+    return new Promise((resolve, reject) => {
+        admin.database().ref(`perfiles/${idNegocio}/ofertas`).once('value')
+        .then(ofertas => resolve(ofertas.val()))
+        .catch(err => {
+            console.log(err)
+            reject(err)
+        })
+    })
+}
+
 
 exports.onNewRepartidor = functions.database.ref('nuevoColaborador/{idNegocio}/{idColaborador}')
     .onCreate(async (snapshot, context) => {
@@ -1569,6 +1597,7 @@ export interface NegocioPerfil {
     nombre: string
     pass: string
     portada: string
+    ofertas?: number
     preparacion?: number
     productos: number
     region: string
