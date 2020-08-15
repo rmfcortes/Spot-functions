@@ -747,7 +747,7 @@ exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTempora
                 entrega: negocio.entrega,
                 telefono: negocio.telefono,
                 formas_pago: negocio.formas_pago,
-                envio_gratis_pedMin: negocio.envio_gratis_pedMin ? negocio.envio_desp_pedMin : 0,
+                envio_gratis_pedMin: negocio.envio_gratis_pedMin ? negocio.envio_gratis_pedMin : 0,
                 repartidores_propios: negocio.repartidores_propios,
                 envio_costo_fijo: negocio.envio_costo_fijo ? negocio.envio_costo_fijo : false
             }
@@ -759,7 +759,7 @@ exports.nuevoNegocio = functions.database.ref('nuevo_negocio/{region}/{idTempora
                 //Listoforo
             return admin.database().ref(`result_negocios/${region}/${idTemporal}`).push('ok')
         } catch (error) {
-            return admin.database().ref(`result_negocios/${region}/${idTemporal}`).push(error.errorInfo.code)
+            return admin.database().ref(`result_negocios/${region}/${idTemporal}`).push(error.errorInfo && error.errorInfo.code ? error.errorInfo.code : error)
         }
     })
 
@@ -1027,22 +1027,22 @@ exports.negocioEdit = functions.database.ref('perfiles/{idNegocio}')
         const after: NegocioPerfil = change.after.val()
         const before: NegocioPerfil = change.before.val()
         if (before === after) return null
+        if (before.correo !== after.correo) return
         const region: string = await getRegion(idNegocio)
-        const categoria: string = await getCategoria(idNegocio)
-        let prodsQty: number = await getProdsQty(idNegocio)
-        if (!prodsQty) prodsQty = 0
-        let ofertasQty: number = await getOfertasQty(idNegocio)
-        if (!ofertasQty) ofertasQty = 0
+
             // Sumar y restar cantidad en SubCat
-        
         if (JSON.stringify(before.subCategoria) !== JSON.stringify(after.subCategoria)) {
+            let prodsQty: number = await getProdsQty(idNegocio)
+            if (!prodsQty) prodsQty = 0
+            let ofertasQty: number = await getOfertasQty(idNegocio)
+            if (!ofertasQty) ofertasQty = 0
             for (const item of before.subCategoria) {
-                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/cantidad`).transaction(cantidad => cantidad >= prodsQty ? cantidad - prodsQty : 0)
-                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(cantidad => cantidad >= ofertasQty ? cantidad - ofertasQty : 0)
+                await admin.database().ref(`categoriaSub/${region}/${before.categoria}/${item}/cantidad`).transaction(cantidad => cantidad >= prodsQty ? cantidad - prodsQty : 0)
+                await admin.database().ref(`categoriaSub/${region}/${before.categoria}/${item}/ofertas`).transaction(cantidad => cantidad >= ofertasQty ? cantidad - ofertasQty : 0)
             }        
             for (const item of after.subCategoria) {
-                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/cantidad`).transaction(cantidad => cantidad ? cantidad + prodsQty : prodsQty)
-                await admin.database().ref(`categoriaSub/${region}/${categoria}/${item}/ofertas`).transaction(cantidad => cantidad ? cantidad + ofertasQty : ofertasQty)
+                await admin.database().ref(`categoriaSub/${region}/${after.categoria}/${item}/cantidad`).transaction(cantidad => cantidad ? cantidad + prodsQty : prodsQty)
+                await admin.database().ref(`categoriaSub/${region}/${after.categoria}/${item}/ofertas`).transaction(cantidad => cantidad ? cantidad + ofertasQty : ofertasQty)
             }
     
                 // Mover vendidos
@@ -1053,12 +1053,12 @@ exports.negocioEdit = functions.database.ref('perfiles/{idNegocio}')
                     admin.database().ref(`vendidos/${region}/todos/${childKey}`).update(childData)
                     .then(async() => {
                         for (const item of before.subCategoria) {
-                            await admin.database().ref(`vendidos/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).remove()
+                            await admin.database().ref(`vendidos/${region}/subCategorias/${before.categoria}/${item}/${childData.id}`).remove()
                         }
                     })
                     .then(async () => {
                         for (const item of after.subCategoria) {
-                            await admin.database().ref(`vendidos/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).update(childData)
+                            await admin.database().ref(`vendidos/${region}/subCategorias/${after.categoria}/${item}/${childData.id}`).update(childData)
                         }
                     })
                     .catch(err => console.log(err))
@@ -1072,12 +1072,12 @@ exports.negocioEdit = functions.database.ref('perfiles/{idNegocio}')
                     admin.database().ref(`ofertas/${region}/todas/${childData.id}`).update(childData)
                     .then(async() => {
                         for (const item of before.subCategoria) {
-                            await admin.database().ref(`ofertas/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).remove()
+                            await admin.database().ref(`ofertas/${region}/subCategorias/${before.categoria}/${item}/${childData.id}`).remove()
                         }
                     })
                     .then(async() => {
                         for (const item of after.subCategoria) {
-                            await admin.database().ref(`ofertas/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).update(childData)
+                            await admin.database().ref(`ofertas/${region}/subCategorias/${after.categoria}/${item}/${childData.id}`).update(childData)
                         }
                     })
                     .catch(err => console.log(err))
@@ -1092,21 +1092,23 @@ exports.negocioEdit = functions.database.ref('perfiles/{idNegocio}')
                     admin.database().ref(`vendidos-servicios/${region}/todos/${childKey}`).update(childData)
                     .then(async () => {
                         for (const item of before.subCategoria) {
-                            await admin.database().ref(`vendidos-servicios/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).remove()
+                            await admin.database().ref(`vendidos-servicios/${region}/subCategorias/${before.categoria}/${item}/${childData.id}`).remove()
                         }
                     })
                     .then(async () => {
                         for (const item of after.subCategoria) {
-                            await admin.database().ref(`vendidos-servicios/${region}/subCategorias/${childData.categoria}/${item}/${childData.id}`).update(childData)
+                            await admin.database().ref(`vendidos-servicios/${region}/subCategorias/${after.categoria}/${item}/${childData.id}`).update(childData)
                         }
                     })
                     .catch(() => null)
                 })
             })
         }
+
+            // Algolia section
         const negocioAlgolia: NegocioAlgolia = {
             abierto: false,
-            categoria,
+            categoria: after.categoria,
             logo: after.logo,
             nombre: after.nombre,
             objectID: after.id,
@@ -1120,19 +1122,19 @@ exports.negocioEdit = functions.database.ref('perfiles/{idNegocio}')
         if (before.nombre === after.nombre) delete negocioAlgolia.nombre
         if (before.productos === after.productos) delete negocioAlgolia.productos
         if (JSON.stringify(before.subCategoria) === JSON.stringify(after.subCategoria)) delete negocioAlgolia.subCategoria
+        if (!negocioAlgolia.categoria && !negocioAlgolia.logo &&
+            !negocioAlgolia.nombre && !negocioAlgolia.productos && !negocioAlgolia.subCategoria) return null
         return index.partialUpdateObject(negocioAlgolia)
     })
 
-function getCategoria(idNegocio: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-        admin.database().ref(`perfiles/${idNegocio}/categoria`).once('value')
-        .then(region => resolve(region.val()))
-        .catch(err => {
-            console.log(err)
-            reject(err)
-        })
+exports.onCorreoNegocioEdit = functions.database.ref('perfiles/{idNegocio}/correo')
+    .onUpdate(async (change, context) => {
+        const idNegocio = context.params.idNegocio
+        const after: string = change.after.val()
+        const before: string = change.before.val()
+        if (before === after) return null
+        return await admin.auth().updateUser(idNegocio, {email: after})
     })
-}
 
 function getNombreNegocio(idNegocio: string): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -1167,7 +1169,6 @@ function getOfertasQty(idNegocio: string): Promise<number> {
     })
 }
 
-
 exports.onNewRepartidor = functions.database.ref('nuevoColaborador/{idNegocio}/{idColaborador}')
     .onCreate(async (snapshot, context) => {
         const idNegocio = context.params.idNegocio
@@ -1197,7 +1198,7 @@ exports.onPassChanged = functions.database.ref('repartidores/{idNegocio}/detalle
         const idColaborador = context.params.idColaborador
         const after = change.after.val()
         const before = change.before.val()
-        if (before === after) console.log('Pass didnt change')
+        if (before === after) return 
         return await admin.auth().updateUser(idColaborador, { password: after })
     })
 
